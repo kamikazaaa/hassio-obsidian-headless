@@ -59,12 +59,33 @@ def write_json(path, value):
     path.write_text(json.dumps(value, sort_keys=True, indent=2)+'\n')
 
 
-def execute(args, *, timeout=20, check=True, binary=False):
-    result = subprocess.run(args, capture_output=True, text=not binary, timeout=timeout)
+def execute(args, *, timeout=20, check=True, binary=False, input_data=None):
+    result = subprocess.run(args, input=input_data, capture_output=True, text=not binary, timeout=timeout)
     if check and result.returncode:
         output = result.stderr if binary else result.stderr[-4000:]
         raise RuntimeError(f'Command failed ({result.returncode}): {args!r}: {output!r}')
     return result
+
+
+def root_owned_archive(entries):
+    """Supply the Supervisor's root-owned input contract without host chown.
+
+    Docker 28's archive extraction preserves incoming ownership even though
+    `docker cp` documentation describes a destination-owner default. Explicit
+    numeric metadata makes fixture provisioning independent of the host UID.
+    """
+    buffer = io.BytesIO()
+    def root_owner(member):
+        need(member.isfile() or member.isdir(), f'Unsupported fixture archive entry: {member.name}')
+        member.uid = member.gid = 0
+        member.uname = member.gname = 'root'
+        for key in ('uid', 'gid', 'uname', 'gname', 'SCHILY.uid', 'SCHILY.gid'):
+            member.pax_headers.pop(key, None)
+        return member
+    with tarfile.open(fileobj=buffer, mode='w', format=tarfile.PAX_FORMAT) as archive:
+        for source, name in entries:
+            archive.add(source, arcname=name, filter=root_owner)
+    return buffer.getvalue()
 
 
 class Container:
@@ -86,6 +107,10 @@ class Container:
     def inspect(self):
         return json.loads(self.docker('inspect', self.container).stdout)[0]
 
+    def copy_root(self, entries, destination):
+        self.docker('cp', '-', self.container+':'+destination, binary=True,
+                    input_data=root_owned_archive(entries))
+
     def record(self, label, value):
         write_json(self.suite.artifacts/f'{self.name}-{label}.json', value)
         self.evidence['checks'].append(label)
@@ -103,16 +128,29 @@ class Container:
                     '--mount', f'type=volume,source={self.volume},target=/data',
                     '--env', 'SUPERVISOR_TOKEN='+INHERITED,
                     '--env', 'UNRELATED_TEST_SECRET='+INHERITED, self.suite.image)
-        # Copy into a directory, rather than to the ob symlink destination: the
-        # archive replaces that directory entry with a regular test executable.
-        self.docker('cp', str(self.directory), self.container+':'+str(ROOT))
-        self.docker('cp', str(self.directory/'bin')+'/.', self.container+':/usr/local/bin/')
-        self.docker('cp', str(self.directory/'options.json'), self.container+':/data/options.json')
+        # Explicit archive entries replace ob's symlink inside its directory;
+        # no copy operation resolves the ob symlink as its destination path.
+        self.copy_root([(self.directory, ROOT.name)], str(ROOT.parent))
+        self.copy_root([(self.directory/'bin'/name, name) for name in ('ob', 'rmapi')], '/usr/local/bin')
+        self.copy_root([(self.directory/'options.json', 'options.json')], '/data')
         trust = self.directory/'container-trust.pem'
         self.docker('cp', self.container+':/etc/ssl/certs/ca-certificates.crt', str(trust))
         with trust.open('ab') as stream:
             stream.write(b'\n'+(self.directory/'tls/ca.pem').read_bytes())
-        self.docker('cp', str(trust), self.container+':/etc/ssl/certs/ca-certificates.crt')
+        self.copy_root([(trust, 'ca-certificates.crt')], '/etc/ssl/certs')
+        copied = self.docker('cp', self.container+':/data/options.json', '-', binary=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(copied), mode='r:*') as archive:
+            entries = archive.getmembers()
+            need(len(entries) == 1, f'Unexpected stopped options archive entries: {[entry.name for entry in entries]}')
+            member = entries[0]
+            need(member.isfile() and member.uid == 0 and member.gid == 0 and member.mode == 0o600,
+                 f'Stopped options metadata violates the root-owned file contract: uid={member.uid}, gid={member.gid}, mode={member.mode:o}, type={member.type!r}')
+            payload = archive.extractfile(member).read()
+            expected = (self.directory/'options.json').read_bytes()
+            need(payload == expected, 'Stopped options bytes differ from the synthetic fixture')
+            self.record('options-provisioned-before-init', {'uid': member.uid, 'gid': member.gid,
+                        'mode': '0600', 'regular_file': True, 'sha256': hashlib.sha256(payload).hexdigest(),
+                        'verified_while_stopped': True})
         inspection = self.inspect()
         need(inspection['Config']['Entrypoint'] == ['/init'], 'Container entrypoint is not the image /init')
         need(inspection['Path'] == '/init' and inspection['Args'] == [], 'Container did not retain the actual /init command')
@@ -133,6 +171,12 @@ class Container:
                              *args, timeout=timeout, check=False)
         if result.returncode:
             (self.suite.artifacts/f'{self.name}-{label}-failure.log').write_text(result.stdout+'\n'+result.stderr)
+            try:
+                logs = self.docker('logs', '--tail', '80', self.container, timeout=10, check=False)
+                print(f'[{self.name}] Container log at failed probe {label}:\n'+(logs.stdout+logs.stderr)[-12000:],
+                      file=sys.stderr, flush=True)
+            except Exception as error:
+                print(f'[{self.name}] Cannot collect failure log excerpt: {error}', file=sys.stderr, flush=True)
             raise AssertionError(f'{self.name}/{label} probe failed ({result.returncode}): {result.stderr[-5000:]} {result.stdout[-1000:]}')
         try:
             value = json.loads(result.stdout)

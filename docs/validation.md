@@ -36,6 +36,16 @@ S6 restarts and controlled shutdown. Each architecture retains `evidence.json`,
 container logs and CI provenance. A failed assertion fails the image job;
 missing Docker/native execution is not recorded as a pass.
 
+The first invocation at `d57589ac6cbc8a8704c16bda48ba8d388d77728e`
+([PR run](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39069488701),
+[push run](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39069486408))
+exposed a fixture-provisioning error on both architectures: S6 started all four
+services, but the copied options retained the host runner's ownership and the
+runtime correctly rejected them. The harness now supplies explicit root-owned
+archive entries before startup. The production options ownership check and
+service definitions remain unchanged. This failed attempt is not a Docker/S6
+pass; subsequent completed runs must establish the corrected result.
+
 Only an actually completed integration step with its matching evidence closes
 the synthetic Docker/S6 gate for that commit and platform. Earlier passing
 unit tests or entrypoint-override smoke checks cannot substitute for it.

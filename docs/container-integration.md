@@ -35,8 +35,10 @@ the container use the image's already installed, locked dependencies.
 The tested container does not override its entrypoint, Python package,
 supervision scripts, service identities, managed-option parser, publication
 implementation or MCP server. Test helpers and synthetic options are copied
-into a newly created container before startup. Each scenario uses a new named
-data volume. The harness removes its containers and volumes after collecting
+into a newly created container before startup. Archive entries explicitly use
+UID/GID 0, so an unprivileged host runner cannot change the required ownership
+of the synthetic Supervisor options. Each scenario uses a new named data
+volume. The harness removes its containers and volumes after collecting
 evidence, including after assertion failures.
 
 Only the external Obsidian and reMarkable CLI responses are substituted by
