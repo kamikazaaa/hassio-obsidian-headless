@@ -1,6 +1,8 @@
 # Immutable multi-architecture indexes verified against official registries.
 # BuildKit selects amd64/arm64 automatically; see docs/build-provenance.md.
-FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS go-builder
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS go-base
+
+FROM go-base AS go-builder
 
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
 WORKDIR /build/remarkable-sync
@@ -34,6 +36,10 @@ RUN git init . \
         -o /out/rmapi .
 
 FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS node-builder
+
+# Bootstrap HTTPS trust from the untouched pinned base; Node slim has no CA bundle.
+# Keep this independent of the Go build and its downloaded dependencies.
+COPY --from=go-base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # Freeze signed Debian package inputs. The dated snapshot disables expiry
 # checking; APT signature and package hash verification stay enabled.

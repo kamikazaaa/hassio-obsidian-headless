@@ -38,6 +38,8 @@ The upstream source definitions for the verified runtime images are [Node revisi
 
 ## System packages
 
+The slim Node builder obtains its system CA bundle before its first HTTPS APT update by copying `/etc/ssl/certs/ca-certificates.crt` from the untouched `go-base` stage. That stage uses the existing pinned official Go image above, whose amd64 and arm64 CA-install layers were checked to contain the same valid PEM bundle. The Go compiler stage derives separately from that base, so certificate bootstrap does not depend on Go builds or downloaded modules. No additional image or package input is introduced; HTTPS certificate verification remains enabled.
+
 `build/debian.sources` fixes both Debian and Debian Security to `20261016T000000Z` snapshots. The following signed repository suites were checked to exist and include both amd64 and arm64:
 
 - [bookworm](https://snapshot.debian.org/archive/debian/20261016T000000Z/dists/bookworm/Release)
