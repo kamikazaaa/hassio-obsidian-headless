@@ -89,6 +89,17 @@ stop budget large enough for this case and records its timing; Docker's shorter
 default stop timeout must not be mistaken for that tested budget. Supervisor
 acceptance must verify its configured stop budget against this behavior.
 
+The optional-disabled scenario also stops and starts the same container through
+`/init`, retaining its image and populated named `/data` volume without copying
+fixtures again. The second boot must complete a fresh Obsidian acquisition,
+even if Linux reuses a worker PID, keep optional services disabled, and obtain
+a fresh successful Docker healthcheck. Protected file hashes, ownership and
+modes must match across both boots and the second shutdown.
+
+This normal Docker stop/start does not cover an all-enabled container restart,
+a forced container kill, image replacement/update, or Home Assistant
+Supervisor, device or power-loss recovery.
+
 There is no producer-to-reader startup dependency: a reader may start before
 the first source publication. It must reject an unavailable source without
 inventing data and later read a complete generation once acquisition succeeds.
@@ -117,6 +128,8 @@ adding the harness or passing the older entrypoint-override smoke tests is not
 evidence that the integration test ran successfully.
 
 Shutdown evidence distinguishes the outer Docker stop from child cleanup.
+Every asserted stop must finish within its budget with container exit status
+`0`; the required S6 stop events must come from the current boot's logs.
 The current runtime intentionally kills outstanding acquisition/reader process
 groups during cleanup. A bounded S6 shutdown without Docker's timeout killing
 PID 1 therefore does not claim that every child receives a graceful protocol

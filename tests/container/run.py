@@ -164,7 +164,20 @@ class Container:
                                  'mounts': [{'type': 'volume', 'name': self.volume, 'destination': '/data'}],
                                  'overrides': ['/usr/local/bin/ob', '/usr/local/bin/rmapi', '/etc/ssl/certs/ca-certificates.crt'],
                                  'image_id': inspection['Image']})
+        self.boot()
+
+    def boot(self):
+        # A stopped container can start remotely even if the CLI times out.
+        self.stopped = False
         self.docker('start', self.container)
+        inspection = self.inspect()
+        need(inspection['State']['Running'], 'Container did not remain running after /init start')
+        self.boot_started_at = inspection['State']['StartedAt']
+        boots = self.evidence.setdefault('boots', [])
+        value = {'container_id': inspection['Id'], 'image_id': inspection['Image'],
+                 'mounts': inspection['Mounts'], 'started_at': self.boot_started_at}
+        boots.append(value)
+        return self.record('boot-'+str(len(boots)), value)
 
     def probe(self, label, *args, timeout=105):
         result = self.docker('exec', self.container, '/usr/local/bin/python3', str(ROOT/'probe.py'),
@@ -197,17 +210,22 @@ class Container:
         need(not {8421, 8422}.intersection(state['listening_tcp_ports']), 'A removed credential web port is listening')
         return state
 
-    def wait_docker_health(self):
+    def wait_docker_health(self, *, label='docker-healthcheck'):
         deadline = time.monotonic()+45
+        after = datetime.fromisoformat(self.boot_started_at.replace('Z', '+00:00')).timestamp()
         while True:
             state = self.inspect()['State']
-            if state.get('Health', {}).get('Status') == 'healthy':
-                return self.record('docker-healthcheck', state['Health'])
+            health = state.get('Health', {})
+            recent = health.get('Log', [])
+            if health.get('Status') == 'healthy' and recent and recent[-1]['ExitCode'] == 0:
+                checked_at = datetime.fromisoformat(recent[-1]['Start'].replace('Z', '+00:00')).timestamp()
+                if checked_at >= after:
+                    return self.record(label, health | {'boot_started_at': self.boot_started_at})
             need(state['Running'], 'Container exited while waiting for the actual Docker healthcheck')
             need(time.monotonic() < deadline, f'Actual Docker healthcheck did not become healthy: {state}')
             time.sleep(1)
 
-    def stop(self, grace=20):
+    def stop(self, grace=20, *, label='sigterm-shutdown'):
         started = time.monotonic()
         self.docker('stop', '--signal', 'SIGTERM', '--time', str(grace), self.container, timeout=grace+10)
         elapsed = time.monotonic()-started
@@ -216,18 +234,20 @@ class Container:
         need(not state['Running'] and not state['OOMKilled'], f'Container did not stop normally: {state}')
         need(state['ExitCode'] != 137 and elapsed < grace,
              f'Container hit the Docker SIGKILL deadline ({elapsed:.3f}s, exit {state["ExitCode"]})')
-        # Docker logs splits stdout and stderr; S6 normally uses stderr.
-        log_result = self.docker('logs', self.container)
+        need(state['ExitCode'] == 0, f'Container shutdown failed with exit code {state["ExitCode"]}')
+        # Docker retains logs across starts. Only this boot can prove its stop.
+        log_result = self.docker('logs', '--since', self.boot_started_at, self.container)
         logs = log_result.stdout+log_result.stderr
         for service in SERVICES.values():
             need(f'service {service} successfully stopped' in logs,
                  f'No completed S6 stop event for {service}; see container log')
-        self.record('sigterm-shutdown', {'signal': 'SIGTERM', 'grace_seconds': grace, 'elapsed_seconds': elapsed,
+        self.record(label, {'signal': 'SIGTERM', 'grace_seconds': grace, 'elapsed_seconds': elapsed,
                                          'exit_code': state['ExitCode'], 'oom_killed': state['OOMKilled'],
+                                         'boot_started_at': self.boot_started_at,
                                          'docker_force_kill': False, 's6_services_stopped': list(SERVICES.values()),
                                          'child_cleanup_policy': 'Application cleanup may SIGKILL child groups; Docker did not force-kill PID 1.'})
 
-    def stopped_inventory(self):
+    def stopped_inventory(self, *, label='stopped-data-inventory'):
         need(self.stopped, 'Stopped-volume integrity inspection requires a stopped container')
         payload = self.docker('cp', self.container+':/data', '-', binary=True).stdout
         result = {}
@@ -242,7 +262,7 @@ class Container:
                 result[relative] = {'sha256': hashlib.sha256(stream.read()).hexdigest(), 'size': member.size,
                                     'uid': member.uid, 'gid': member.gid, 'mode': member.mode}
         need('options.json' in result, 'Docker copy did not contain the stopped /data volume')
-        return self.record('stopped-data-inventory', result)
+        return self.record(label, result)
 
     def finish(self, error=None):
         self.evidence['result'] = 'failed' if error else 'passed'
@@ -340,7 +360,8 @@ class Suite:
 
 
 def disabled(container):
-    container.ready('ready-disabled', {'obsidian': 'ok', 'git': 'disabled', 'remarkable': 'disabled', 'mcp': 'disabled'})
+    expected = {'obsidian': 'ok', 'git': 'disabled', 'remarkable': 'disabled', 'mcp': 'disabled'}
+    container.ready('ready-disabled', expected)
     snapshot = container.verify_runtime()
     need(8420 not in snapshot['listening_tcp_ports'], 'Disabled MCP unexpectedly opened its listener')
     container.probe('healthy-disabled', 'health', '0')
@@ -349,6 +370,25 @@ def disabled(container):
     before = container.probe('before-stop-data', 'inventory')
     container.stop()
     need(container.stopped_inventory() == before, 'Disabled-scenario shutdown changed protected application data')
+    first_boot = container.evidence['boots'][0]
+    restarted = container.boot()
+    for key in ('container_id', 'image_id', 'mounts'):
+        need(restarted[key] == first_boot[key], f'Container restart replaced {key}')
+    need(restarted['started_at'] != first_boot['started_at'], 'Docker did not record a new container start')
+    # A new PID namespace can reuse the old PID from persisted status.json.
+    # Require an acquisition after this boot, not merely a matching state/PID.
+    after = datetime.fromisoformat(restarted['started_at'].replace('Z', '+00:00')).timestamp()
+    container.probe('fresh-acquisition-after-container-restart', 'ready', json.dumps(expected), str(after))
+    snapshot = container.verify_runtime('runtime-after-container-restart')
+    need(8420 not in snapshot['listening_tcp_ports'], 'Disabled MCP opened its listener after container restart')
+    container.probe('disabled-no-respawn-after-container-restart', 'no-respawn', 'git', 'remarkable', 'mcp', timeout=50)
+    container.probe('healthy-after-container-restart', 'health', '0')
+    container.wait_docker_health(label='docker-healthcheck-after-container-restart')
+    need(container.probe('data-after-container-restart', 'inventory') == before,
+         'Container restart changed protected application data or the last-good publication')
+    container.stop(label='sigterm-shutdown-after-container-restart')
+    need(container.stopped_inventory(label='stopped-data-after-container-restart') == before,
+         'Second container shutdown changed protected application data')
 
 
 def enabled(container):

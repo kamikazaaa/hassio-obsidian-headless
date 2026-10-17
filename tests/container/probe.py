@@ -111,11 +111,12 @@ def wait(label, predicate, timeout=90, interval=.25):
         time.sleep(interval)
 
 
-def ready(expected, timeout=90):
+def ready(expected, timeout=90, *, after=None):
     def inspect():
         values = statuses()
         current_workers = workers()
         return values if all(values[s]['state'] == state and
+                             (after is None or state != 'ok' or values[s].get('last_success', 0) > after) and
                              (state not in ('ok', 'acquiring') or s in current_workers and
                               values[s].get('pid') == current_workers[s]['pid'])
                              for s, state in expected.items()) else None
@@ -433,7 +434,7 @@ def listening_ports():
 def main(args):
     action = args[0]
     if action == 'ready':
-        return ready(json.loads(args[1]))
+        return ready(json.loads(args[1]), after=float(args[2]) if len(args) > 2 else None)
     if action == 'snapshot':
         return {'statuses': statuses(), 'workers': workers(), 's6': s6_status(),
                 'pid1': proc(1), 'runtime_hashes': runtime_hashes(), 'listening_tcp_ports': listening_ports()}

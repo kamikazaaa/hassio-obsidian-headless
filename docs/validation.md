@@ -44,7 +44,30 @@ services, but the copied options retained the host runner's ownership and the
 runtime correctly rejected them. The harness now supplies explicit root-owned
 archive entries before startup. The production options ownership check and
 service definitions remain unchanged. This failed attempt is not a Docker/S6
-pass; subsequent completed runs must establish the corrected result.
+pass.
+
+At source commit `6f7bd61b23aaa96c5fc5352336d4430f47065c6a`,
+[PR run 39070445191](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39070445191)
+and [push run 39070442042](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39070442042)
+each passed all four native matrix jobs, including the actual `/init`/S6
+integration on AMD64 and ARM64. Each Python job reported 124 passed. The PR
+checkout was merge commit `99d3c7212ef30b63b1a76f2e3100c482687bbba5`.
+The downloaded PR artifact archives `12115262154` and `12114732818` matched
+their recorded SHA-256 digests. Their shutdown records all reported container
+exit status `0`, although the assertion then only rejected status `137`.
+Those scenarios did not start a stopped container again on its populated data.
+
+The follow-up requires exit status `0` and current-boot S6 stop logs. It also
+adds a normal stop/start of the optional-disabled container through `/init`,
+reusing the same image and named `/data` volume without recopying fixtures.
+The second boot must show a fresh successful Obsidian acquisition even if its
+PID is reused, correct disabled-service states, unchanged protected file
+hashes/ownership/modes and a fresh Docker healthcheck, then stop successfully
+again. These assertions require a completed CI run and matching artifacts for
+the follow-up head; the prior passes do not establish this retained-data
+stop/start result. An all-enabled container
+restart, forced container kill, image replacement/update and
+Supervisor/device/power-loss recovery remain outside this added scenario.
 
 Only an actually completed integration step with its matching evidence closes
 the synthetic Docker/S6 gate for that commit and platform. Earlier passing
