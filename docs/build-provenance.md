@@ -91,7 +91,7 @@ The compiled module inventory includes `github.com/golang-jwt/jwt/v4@v4.5.2`, `g
 
 `.github/workflows/verify.yaml` runs on pushes, pull requests, and manual dispatch. Its entire permission set is `contents: read`; checkout disables persisted Git credentials. There are no registry logins, package-write permissions, release mutations, external repository checkouts with PATs, or upstream add-on repository writes. The previous five workflows are removed.
 
-Native `ubuntu-24.04` and `ubuntu-24.04-arm` jobs run the Python suite, actual numeric-UID tests on synthetic data, Go race tests/vet/build, and shell syntax checks. Only after both test jobs succeed do native image jobs build the Dockerfile and run offline, unprivileged import/CLI/SQLite smoke checks. The workflow does not test real vendor accounts or a running Supervisor. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) documents these native runner labels and their administrative test capability.
+Native `ubuntu-24.04` and `ubuntu-24.04-arm` jobs run the Python suite, actual numeric-UID tests on synthetic data, Go race tests/vet/build, and shell syntax checks. Only after both test jobs succeed do native image jobs build the Dockerfile, run offline unprivileged import/CLI/SQLite smoke checks, then exercise the same image through `/init` using the [isolated Docker/S6 harness](container-integration.md). The workflow records both the PR source head and actual checkout commit (which may be GitHub's PR merge commit), image/platform provenance and per-architecture diagnostics. The workflow does not test real vendor accounts or a running Supervisor. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) documents these native runner labels and their administrative test capability.
 
 Third-party action references are full commit SHAs, resolved from their official repositories on 2026-10-17:
 
@@ -100,6 +100,12 @@ Third-party action references are full commit SHAs, resolved from their official
 | `actions/checkout` v4 | `11d5960a326750d5838078e36cf38b85af677262` |
 | `actions/setup-python` v5 | `a26af69be951a213d495a4c3e4e4022e16d87065` |
 | `actions/setup-go` v5 | `40f1582b2485089dde7abd97c1529aa768e1baff` |
+| `actions/upload-artifact` v7.0.2 | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` |
+
+The upload action retains verification logs/evidence for 14 days, including
+failed-run diagnostics. It does not publish an application image. Its pinned
+commit was checked against the official
+[v7.0.2 tag](https://github.com/actions/upload-artifact/tree/cf430e030ddbb5b0abf93d22962f4752f3646cd9).
 
 CI VM images and the Docker daemon supplied by GitHub are service-managed build infrastructure. They are not embedded in the final application image and are not claimed to be frozen by these action pins.
 

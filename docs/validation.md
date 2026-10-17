@@ -4,7 +4,7 @@
 
 **Development preview only. Production installation is not approved by this evidence.**
 
-The hardened runtime has been implemented and tested against synthetic inputs. Native image construction and offline runtime smoke checks run in [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml); inspect the completed result for the exact commit being considered. No complete S6 boot, real Home Assistant, Obsidian Sync, reMarkable, OCR or backup/restore acceptance run has been completed. Do not replace an existing production add-on in place.
+The hardened runtime has been implemented and tested against synthetic inputs. Native image construction, offline runtime smoke checks and a separate [Docker/S6 integration harness](container-integration.md) run in [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml); inspect the completed result and retained evidence for the exact commit being considered. A successful Docker/S6 run is limited to the synthetic scenarios documented below. No real Home Assistant Supervisor, Obsidian Sync, reMarkable, OCR or backup/restore acceptance run has been completed. Do not replace an existing production add-on in place.
 
 Evidence date: **2026-10-17**. Reviewed upstream base: `3b856fa68892f3a8e1c4548cdc46b649b87de0e2`. The final integrated Python run below covered implementation commit **`18291bccc20bccbabcff5416453350ba7c75593e`**; this validation document was added afterwards without changing runtime behavior.
 
@@ -16,7 +16,33 @@ The [initial native CI run](https://github.com/kamikazaaa/hassio-obsidian-headle
 
 At commit `6fd1f0aa40daa877e12b2f0f9a54334883f1a2c1`, [PR CI run 39037037448](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39037037448) completed successfully: both native Python/Go jobs, both complete image builds and both offline runtime smoke checks passed. Each architecture ran all 124 Python tests with no skips. A [parallel push run](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39037034476) exposed a sporadic test-observer failure when procfs returned `ESRCH` during a process-status read. The test helpers now handle both process-disappearance errors explicitly, retaining live/zombie checks and propagating unrelated errors. The same race was removed from four runtime tests. This observer-only correction passed the complete local suite again (124 passed, no skips, two warnings, 8.11 s) and deterministic read-error injection; it changes no production code or image build input. Refer to subsequent commit checks for the final CI status.
 
-The image smoke checks run with no network, override the image entrypoint, and use service UIDs 10001, 10003 and 10004 for Python imports, CLI version commands and an in-memory SQLite query. Even a successful complete CI run therefore does not establish `/init`/S6 startup, Supervisor integration, real account synchronization, final operating-system vulnerability status or independent restore behavior.
+The original image smoke checks run with no network, override the image entrypoint, and use service UIDs 10001, 10003 and 10004 for Python imports, CLI version commands and an in-memory SQLite query. Runs through reviewed head `b5601e8aefae1834e15c6f68686d6070adafdce3` therefore did not establish `/init`/S6 startup. Their successful results remain valid within that narrower scope.
+
+## Docker/S6 integration gate
+
+The image jobs now additionally invoke `tests/container/run.py` against the
+same locally built image on native AMD64 and ARM64 runners. The tested
+containers retain `/init` and the original S6 service definitions. They use
+fresh synthetic `/data` volumes, no external network and no published ports.
+Cloud CLI adapters are test-only files excluded from the production build;
+Git, reMarkable conversion, publication and authenticated TLS/MCP run through
+their installed implementations. See [the reproducible commands, fixture
+boundaries and lifecycle expectations](container-integration.md).
+
+The integration gate separately checks S6 process state and application
+readiness, distinct service identities and filesystem/credential boundaries,
+unavailable sources, preservation of complete prior generations, retries,
+S6 restarts and controlled shutdown. Each architecture retains `evidence.json`,
+container logs and CI provenance. A failed assertion fails the image job;
+missing Docker/native execution is not recorded as a pass.
+
+Only an actually completed integration step with its matching evidence closes
+the synthetic Docker/S6 gate for that commit and platform. Earlier passing
+unit tests or entrypoint-override smoke checks cannot substitute for it.
+Even a complete Docker/S6 pass does not establish Supervisor integration,
+real account synchronization, final operating-system vulnerability status,
+graceful completion of every interrupted child operation, storage power-loss
+durability or independent restore behavior.
 
 ## Executed local checks
 
@@ -61,7 +87,7 @@ Concrete issues reproduced and corrected during implementation included:
 - Retired publication cleanup after a crash could ignore an existing reader lease. Recovery now obtains the required exclusive lease and retains/counts busy generations.
 - Unchanged publications could be reused despite a broken lease, timestamp/schema or access mode. Reuse now checks the reader contract and existing access permissions; invalid control state fails explicitly without replacing the current pointer.
 - A rejected generations-directory mode leaked a file descriptor per retry. The validation now runs inside the descriptor cleanup scope; a repeated-rejection regression verifies stable descriptor count.
-- The intended 30-second retry delay exceeded S6's default five-second finish timeout. Each service now supplies `timeout-finish` of 35000 ms and uses `exec sleep 30`; ordinary termination and permanent failures return promptly. See the [official S6 process/finish contract](https://skarnet.org/software/s6/s6-supervise.html). Full supervisor execution remains a container acceptance gate.
+- The intended 30-second retry delay exceeded S6's default five-second finish timeout. Each service now supplies `timeout-finish` of 35000 ms and uses `exec sleep 30`; ordinary termination and permanent failures return promptly. See the [official S6 process/finish contract](https://skarnet.org/software/s6/s6-supervise.html). The Docker/S6 gate now exercises this policy in the installed container; consult its actual run evidence for the tested commit.
 
 ## Dependency advisory evidence
 
@@ -76,7 +102,7 @@ These are dated checks against particular databases and artifacts. They do not c
 
 ## Required acceptance before production
 
-1. **Build and run both images.** Execute the native AMD64 and ARM64 CI matrices; inspect the resulting complete image and operating-system package inventory. Start the image through `/init`, verify all services actually enter the intended state, and observe health and restart timing.
+1. **Build and run both images.** Require successful native AMD64 and ARM64 CI matrices including the actual `/init`/S6 integration step and retained per-architecture evidence. Inspect the resulting complete image and operating-system package inventory. The synthetic container test covers its recorded startup, health and restart scenarios; it does not replace the following environment-specific acceptance.
 2. **Use a disposable Home Assistant instance.** Confirm Supervisor option provisioning, protection/confinement, UID access, port mapping, TLS certificate loading/renewal, disabled-to-enabled transitions, normal shutdown and restart. Verify the new slug does not replace an existing instance.
 3. **Use disposable source accounts/data first.** Test fresh Obsidian setup and a repeated pull-only sync; reject a wrong vault selector and a changed identity. Verify exactly which downloaded files and deletions become published. Test Git authentication without exposing a token. Test reMarkable pairing, mixed document types, manual-output conflicts, retained local/cloud-deleted items and supported OCR behavior.
 4. **Exercise recoverability.** Stop processes during acquisition, conversion, pointer replacement and cleanup. Test controlled disk-full/low-space conditions on the intended storage. After every case, verify original bytes, the current complete publication, hash agreement, health and recovery. A local fault-injection test does not prove power-loss behavior on the real filesystem/device.

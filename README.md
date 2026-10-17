@@ -55,7 +55,7 @@ The host/container build needs internet access to pinned official package source
 docker build --build-arg BUILD_VERSION=0.1.0-dev -t obsidian-headless-hardened:dev .
 ```
 
-Native [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml) runs the Python/Go checks, builds both target images and checks the installed runtimes offline under unprivileged identities. Inspect the actual run result for the commit you intend to use. These smoke checks override the image entrypoint; full S6 startup, Home Assistant/cloud acceptance and restore testing remain separate gates in [validation](docs/validation.md).
+Native [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml) runs the Python/Go checks, builds both target images and checks the installed runtimes offline under unprivileged identities. It then runs the [Docker/S6 integration harness](docs/container-integration.md) through the image's actual `/init` entrypoint with synthetic sources, separate service UIDs and real publication/TLS/MCP checks. Inspect the completed results and per-architecture artifacts for the exact commit you intend to use. A Docker/S6 pass establishes the tested container lifecycle; Home Assistant Supervisor, actual cloud accounts and independent restore still require their separate [acceptance gates](docs/validation.md).
 
 Minimum managed options:
 
