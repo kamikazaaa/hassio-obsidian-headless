@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-headless-hardened-runtime",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "Build-only dependency lock for the official, unchanged Obsidian Sync CLI",
+  "license": "BSD-3-Clause",
+  "engines": {
+    "node": "22.23.3"
+  },
+  "dependencies": {
+    "obsidian-headless": "0.0.14"
+  }
+}

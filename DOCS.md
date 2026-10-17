@@ -1,367 +1,141 @@
-# Obsidian Headless — Home Assistant Add-on
+# Configuration and operation of the hardened development profile
 
-This add-on provides three services in a single container:
+This document describes the code in this source branch. A production installation is not recommended until the acceptance gates in [validation](docs/validation.md) have been completed.
 
-1. **Obsidian Sync daemon** (`obsidian-headless`) — keeps a local copy of your
-   vault continuously synced via your Obsidian Sync subscription. No GUI required.
+## 1. Prepare an isolated pilot
 
-2. **Obsidian MCP server** (`obsidian-web-mcp`) — exposes your vault as a
-   **remote, streamable HTTP** MCP server so AI assistants (e.g. Claude.ai) can
-   read and search your notes from anywhere — not just from a desktop machine.
+Use a disposable remote Obsidian vault and a new local add-on instance. The slug is `obsidian_headless_hardened`; data lives inside that instance's `/data`. Do not point this version at an existing shared personal worktree. All long-lived source processes run under different UIDs; managed options are read by root and sent only to the intended worker through a fresh private process environment.
 
-3. **reMarkable Cloud sync** (optional) — pulls documents from your reMarkable
-   tablet into Obsidian automatically as Markdown notes with embedded PDFs.
+An Obsidian Sync account and configured remote vault are required by this first profile even if optional Git/reMarkable features are enabled. A standalone Git-only mode is not implemented. Use separate instances/accounts for sources that should not be readable by the same MCP bearer-token holder. The token grants reading across every enabled publication namespace; it does not provide individual user roles.
 
----
+Complete the OS/image tests first, then start with MCP, Git and reMarkable disabled. Keep an independent, recoverable backup outside the add-on and its host. A restored add-on backup can contain account tokens, derived plaintext and encryption material; protect it accordingly.
 
-## Why this add-on vs the alternatives?
+## 2. Obtain the Obsidian token on a trusted computer
 
-| | This add-on | Obsidian Community Plugin MCP servers | mcpvault.org |
-|---|---|---|---|
-| Hosting | Self-hosted on your HA instance | Self-hosted, runs inside Obsidian desktop | Third-party cloud |
-| Obsidian desktop required? | No — syncs headlessly 24/7 | Yes — Obsidian must be open | No |
-| MCP transport | **Remote streamable HTTP** | Local stdio / localhost only | HTTP (cloud) |
-| Works with Claude.ai web? | **Yes** | No — desktop-only clients only | Yes |
-| Works with API/custom clients? | **Yes** | No | Yes |
-| Data leaves your network? | No | No | Yes |
-| Tunnel options | Local network, Tailscale, HTTPS | None | N/A |
-
-**The key differentiator**: Community plugin MCP servers use the stdio or
-localhost transport, which only works with desktop MCP clients (e.g. Claude
-Desktop). This add-on serves the streamable HTTP transport over your network,
-so any MCP client — including Claude.ai, custom API integrations, and remote
-agents — can connect without Obsidian or a desktop machine running.
-
----
-
-## Requirements
-
-- An active **Obsidian Sync** subscription
-- Your vault must already be set up in Obsidian Sync before configuring this add-on
-- If your vault uses **end-to-end encryption**, you will need the vault encryption
-  password (distinct from your Obsidian account password)
-
----
-
-## Step 1: Get your Obsidian Auth Token
-
-The auth token is **not** shown anywhere in the Obsidian desktop app UI. The add-on
-includes a built-in token generator that handles this for you.
-
-1. Install and **start** the add-on (no configuration needed yet)
-2. Open **`http://<your-ha-ip>:8422/`** in your browser
-3. Sign in with your Obsidian account email and password (plus 2FA if enabled)
-4. The token is **saved automatically** — no copy/paste into config needed
-5. Restart the add-on
-
-> Your credentials are sent directly to `api.obsidian.md` — they are never
-> stored or logged by the add-on. The resulting token is saved to
-> `/data/obsidian.token` and picked up automatically on restart.
-
-If you prefer to set the token explicitly, paste it into `obsidian_auth_token`
-in the add-on configuration. A manually configured token takes priority over
-the saved file.
-
-**Alternative (if you have Node 22 installed locally):**
-```bash
-npx obsidian-headless get-token
-```
-
----
-
-## Step 2: Find your Vault Name
-
-The vault name is case-sensitive and must match exactly what Obsidian Sync shows.
-To list your remote vaults, run on a machine with Node 22:
+Use the official pinned CLI on your own trusted workstation with Node.js 22 or later:
 
 ```bash
-OBSIDIAN_AUTH_TOKEN=<your-token> npx obsidian-headless sync-list-remote
+npm install --global obsidian-headless@0.0.14
+ob login
+ob sync-list-remote
 ```
 
-Or check the Obsidian desktop app: **Settings → Sync → Remote vault**.
+`ob login` prompts for account credentials and MFA when required. Use the interactive prompt rather than supplying a password in shell arguments. Version 0.0.14 does **not** offer the old documentation's `get-token` command.
 
----
+After login, the official client stores its token in a private file:
 
-## Step 3: Configure the add-on
-
-Minimum required fields:
-
-| Field | Description |
+| Workstation platform | Token file used by CLI 0.0.14 |
 |---|---|
-| `vault_name` | Exact vault name from Step 2 |
-| `obsidian_auth_token` | Optional — auto-saved by the port 8422 UI; set explicitly to override |
-| `vault_password` | Only if your vault uses E2E encryption |
+| Linux | `${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless/auth_token` |
+| macOS / Windows | `.obsidian-headless/auth_token` inside the user's home directory |
 
-The vault will sync to `/share/obsidian-vault` on your HA host, accessible
-from other add-ons and the HA file system.
+Open that file privately on the trusted computer and copy its value into the add-on's `obsidian_auth_token` option through your protected Home Assistant session. Do not paste the token into issues, chat, shell history or a public configuration example. This token-file guidance is based on the pinned CLI implementation, not a stable external token-export API. A future CLI update must recheck it.
 
----
+Set `vault_name` to the exact name or unique ID returned by `ob sync-list-remote`. Set `vault_password` to the vault encryption password if needed; it is not the account password. Passwords ending in whitespace are rejected because the official noninteractive stdin prompt trims trailing whitespace. The add-on refuses to silently alter such a password.
 
-## Optional: MCP Server
+During first setup the worker requires empty managed vault/configuration state, verifies the actual remote vault identity, sets and verifies `pull-only`, writes its identity binding, then runs one acquisition. A later change of vault selector, unexpected identity, or incomplete first setup stops the worker with fresh-instance guidance. The worker never automatically rebinds a populated vault.
 
-Set `enable_mcp: true` to expose your vault as a remote MCP server on port 8420.
+## 3. Option reference
 
-### MCP server runtime
+The complete authoritative field/type list is [config.yaml](config.yaml), mirrored by [the strict parser](hardened/config.py). Unknown legacy options fail closed.
 
-The MCP server itself is [`obsidian-web-mcp`](https://github.com/jimprosser/obsidian-web-mcp),
-a third-party **Python** project — this add-on packages and configures it, it is
-not code we maintain. It was chosen because it already implements the MCP
-protocol (streamable HTTP transport), vault search/indexing, frontmatter
-parsing, and Bearer/OAuth 2.1 auth; writing an equivalent from scratch (e.g.
-in Go, matching the rest of this add-on's own binaries) would mean
-reimplementing all of that.
-
-The trade-off is that the final container image needs a working Python 3.12
-runtime. Since Debian bookworm's `apt` only ships Python 3.11, and
-`obsidian-web-mcp` requires 3.12+, the Dockerfile copies a self-contained
-Python 3.12 runtime out of a `python:3.12-slim-bookworm` builder stage rather
-than relying on `apt`. If you see the MCP server crash-looping in the logs
-with a `GLIBC_x` version error, it almost always means that runtime copy and
-the final base image have drifted apart — see the `Dockerfile` comments
-around the `mcp-builder` stage for the current pinning rationale.
-
-If instead you see `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
-(or similar), that's `obsidian-web-mcp`'s own `mcp` SDK dependency, not our
-runtime — `obsidian-web-mcp`'s `pyproject.toml` declares an unbounded
-`mcp[cli]>=1.9.0`, so an unpinned `pip install` will happily pull in a
-breaking major release of the upstream MCP Python SDK. We pin `mcp[cli]`
-to a known-compatible range explicitly in the `mcp-builder` Dockerfile
-stage; if this recurs after an SDK major bump, that pin is what needs updating.
-
-### Network binding
-
-The MCP server listens on `0.0.0.0:8420` inside the container (not `127.0.0.1`),
-so it's reachable on your LAN via the published port 8420. What's actually
-reachable from outside the container is still controlled by Docker's port
-publishing (`ports` in `config.yaml`) and your `tunnel_mode` setting — binding
-all interfaces here does not, by itself, expose anything beyond what you've
-already opted into. Auth (bearer token and/or OAuth) is enforced regardless
-of how the request arrives, except in the local-only, no-tunnel case
-described below.
-
-### Authentication
-
-At least one of these must be set:
-
-- **Bearer token** (`mcp_auth_token`): a long random secret. Generate one with:
-  ```bash
-  openssl rand -hex 32
-  ```
-- **OAuth 2.1** (`oauth_client_secret`): for integration with external OAuth providers.
-  Set `oauth_client_id` to customise the client ID (default: `vault-mcp-client`).
-
-> **Local-only unauthenticated mode**: if `tunnel_mode: none`, port 8420 does
-> _not_ require a bearer token. This is acceptable on a trusted local network.
-> Any external path — Tailscale or HTTPS proxy — enforces auth.
-
-### Tunnel mode (`tunnel_mode`)
-
-| Value | Description | Auth requirement |
-|---|---|---|
-| `none` (default) | Port 8420 on your local network only | None required (warns if unset) |
-| `tailscale` | Add-on joins your tailnet; set `tailscale_auth_key` | **`oauth_client_secret` required** |
-| `https` | Expects an external reverse proxy; set `tls_cert_path` / `tls_key_path` | `mcp_auth_token` or `oauth_client_secret` |
-| `cloudflare` | Traffic arrives via a Cloudflare Tunnel — see below | **`oauth_client_secret` required** |
-
-`tailscale` and `cloudflare` require `oauth_client_secret` specifically, not just any
-credential. Tailscale network membership and "this request came through the Cloudflare
-Tunnel" both prove *where* a request came from, not *who* sent it — a shared bearer
-token doesn't add real identity on top of that. Pair OAuth mode with Tailscale's own
-identity-aware ACLs, or (for `cloudflare`) Cloudflare Access, for actual per-user auth.
-
-> **Note on Home Assistant Ingress**: this add-on does not use HA's built-in
-> ingress panel for the MCP server. HA ingress authenticates the *browser* (via
-> your HA session or a Home Assistant access token) but has no way to also
-> supply the vault's own `mcp_auth_token`/OAuth credential to a downstream
-> service — a remote MCP client can only send one `Authorization` header, and
-> HA's own auth and this add-on's auth are deliberately separate secrets. Use
-> `tunnel_mode: tailscale`, `https`, or `cloudflare` for authenticated remote
-> access instead.
-
-### Cloudflare Tunnel (`tunnel_mode: cloudflare`)
-
-This add-on does **not** run a `cloudflared` client itself — tunnel connectivity is
-managed by a separate `cloudflared` add-on. Setting `tunnel_mode: cloudflare` here only
-affects auth validation (requiring `oauth_client_secret`); you still need to configure
-the tunnel and hostname routing in the `cloudflared` add-on/Cloudflare dashboard
-yourself, pointing the public hostname at `http://localhost:8420` on this add-on's host.
-
-**Recommended: gate the tunnel hostname with Cloudflare Access + an identity provider**
-so requests are authenticated by a real login, not just a shared secret:
-
-1. **Add an identity provider**: Zero Trust dashboard → **Settings → Authentication**,
-   add e.g. **Google** (works with any Google account, not just Workspace).
-2. **Create a self-hosted Access application** for your tunnel hostname: **Access
-   controls → Applications → Create new application → "Self-hosted and private"**.
-3. **Add an Allow policy** — e.g. rule type **Emails**, value = your specific address —
-   so only you pass.
-4. **Turn on Managed OAuth** (the application's **Advanced settings** tab). Without this,
-   a non-browser MCP client hits a plain `302` login redirect it can't follow. With it,
-   Access returns a `401` + `WWW-Authenticate` header pointing at its own OAuth discovery
-   endpoints (RFC 8414/9728), and the MCP client completes a real OAuth 2.0
-   authorization-code flow — opening your browser, logging you in via your identity
-   provider, and getting back a token for subsequent requests.
-
-With Access + Managed OAuth in front, you can rely on it as the sole gate and leave this
-add-on's own `oauth_client_secret` as a secondary layer, or keep both for defense in
-depth.
-
-### Connecting Claude.ai
-
-In Claude.ai → Settings → Integrations → Add MCP Server:
-
-- **URL**: `http://<ha-ip>:8420/` (or your Tailscale/HTTPS/Cloudflare Tunnel URL)
-- **Auth**: Bearer token or OAuth 2.1 depending on what you configured above
-
----
-
-## Optional: reMarkable Cloud Sync
-
-Set `enable_remarkable: true` to sync your reMarkable documents into your
-Obsidian vault. This is a **one-way sync**: reMarkable → Obsidian.
-
-### Step 1: Register your device
-
-Device registration and cloud sync are both handled by [`rmapi`](https://github.com/ddvk/rmapi),
-the actively-maintained reMarkable Cloud CLI this add-on wraps — the same
-pattern used for `obsidian-headless` and `obsidian-web-mcp`. There is no
-device-token config field; `rmapi` manages its own credentials.
-
-The add-on always serves a registration UI at **`http://<your-ha-ip>:8421/`**.
-You do not need `enable_remarkable: true` to use this page — registration is
-always available so you can pair your device before enabling sync.
-
-1. Open that URL in your browser
-2. Enter the 8-character code from the step below and submit — this is piped
-   directly to `rmapi`, which completes registration and saves its own
-   credentials to `/data/rmapi/`
-
-**To get your pairing code:**
-- Go to `https://my.remarkable.com/device/desktop/new`
-- Click the **Tablet** tab
-- Copy the 8-character lowercase code shown (e.g. `xxxxxxxx`) — it expires in ~5 minutes
-
-If no device is registered yet, the sync loop waits silently until one is —
-no crash or restart loop.
-
-### What gets synced
-
-For each document on your reMarkable the sync engine creates:
-
-- **`<vault>/reMarkable/<folder>/<Document Name>.md`** — a Markdown note with
-  YAML front-matter (title, modified date, page count, tags, reMarkable ID)
-  and a metadata table
-- **`<vault>/reMarkable/<folder>/<Document Name>.pdf`** — the embedded PDF
-  (for uploaded PDFs and annotated documents)
-- **`<vault>/reMarkable/index.md`** — an index of all documents, updated on
-  every sync
-
-The full folder hierarchy from your reMarkable is preserved. Only documents
-whose cloud version has changed are re-downloaded (cached in `/data/remarkable-sync/`).
-
-### Sync interval
-
-Documents are checked every `remarkable_sync_interval` seconds (default: 300).
-The vault sub-directory can be changed with `remarkable_output_dir` (default: `reMarkable`).
-
-### Label mapping
-
-reMarkable labels on a document become Obsidian tags in the note's front-matter.
-Two options control how:
-
-| Option | Description |
+| Option | Default / rule |
 |---|---|
-| `remarkable_tag_prefix` | Prepended to every reMarkable label. E.g. `"remarkable:"` turns the label `mylabel` into the Obsidian tag `remarkable:mylabel`. Leave blank (default) to overlay reMarkable labels into Obsidian tags unchanged. |
-| `remarkable_extra_tags` | Comma-separated tags added to **every** document synced from reMarkable, regardless of its own labels — e.g. `remarkable` to mark all synced notes for easy filtering in Obsidian. |
+| `obsidian_auth_token` | Required private token |
+| `vault_name` | Required exact remote name or ID |
+| `vault_password` | Empty; provide when required by the remote vault |
+| `obsidian_sync_interval` | 300 seconds; 30–86400 |
+| `enable_git_sync` | `false` |
+| `git_repos` | Multiline namespace/HTTPS repository/branch declarations |
+| `git_auth_token` | Optional GitHub token; only sent to `https://github.com` on standard port |
+| `git_sync_interval` | 900 seconds; 30–86400 |
+| `enable_remarkable` | `false` |
+| `remarkable_pairing_code` | One-time pairing code for a new instance |
+| `remarkable_sync_interval` | 300 seconds; 30–86400 |
+| `remarkable_tag_prefix`, `remarkable_extra_tags` | Optional generated-note tag configuration |
+| `ha_ocr_url` | Empty disables OCR; if set, must be HTTPS |
+| `ha_ocr_token`, `ha_ocr_entity` | Optional settings for the configured OCR service |
+| `enable_mcp` | `false` |
+| `mcp_auth_token` | Required with MCP; 32–512 bearer-safe characters; generate randomness, do not invent a memorable token |
+| `mcp_tls_cert`, `mcp_tls_key` | PEM certificate chain and matching private key, required with MCP |
+| `mcp_allowed_hosts` | Comma-separated exact host or host:port values; required with MCP |
+| `mcp_allowed_origins` | Empty denies browser Origin headers; otherwise exact HTTPS origins |
 
-Both can be combined: with `remarkable_tag_prefix: "rm:"` and `remarkable_extra_tags: "remarkable"`,
-a document labelled `work` gets the tags `rm:work` and `remarkable`.
+### Git sources
 
-### Optional: OCR for handwritten notebooks
-
-Handwritten notebooks are synced as stub notes by default. To transcribe them,
-point the add-on at a Home Assistant OCR endpoint:
-
-| Option | Description |
-|---|---|
-| `ha_ocr_url` | Full URL to a HA webhook or REST endpoint that accepts `{"image": "<base64 PNG>"}` and returns `{"text": "..."}` |
-| `ha_ocr_token` | Long-lived HA access token (not needed for unauthenticated webhooks) |
-| `ha_ocr_entity` | Optional `image_processing` entity ID to include in the OCR payload |
-
-Transcribed text appears under a `## Content (OCR)` section in the note,
-with pages separated by `---`.
-
----
-
-## Optional: Git-Tracked Vault Subdirectories
-
-If part of your vault is itself a git repository on another device (e.g. a
-folder you `git clone`d on your Mac and edit directly in Obsidian), Obsidian
-Sync does not propagate the `.git/` metadata — the headless daemon here has
-no way to `git pull` a repo it was never given credentials for.
-
-Set `enable_git_sync: true` and list repos in `git_repos`, one per line:
-
-```
-<vault-relative-path>|<remote-url>[|<branch>]
+```yaml
+enable_git_sync: true
+git_repos: |
+  SmartHome|https://github.com/example/home-docs.git|main
+  SharedProject|https://github.com/example/project-docs.git|main
+git_auth_token: ""
 ```
 
-Example:
+The entries are examples, not repositories supplied by this project. Namespaces cannot overlap or collide after case/Unicode normalization. HTTPS credentials embedded in URLs, query strings, local file transports and unsafe branch/path syntax are rejected. A different remote or branch creates a different source identity.
 
+Every cycle fetches fresh bare repositories, resolves commit IDs and exports their trees without hooks, submodules or LFS execution. `_source.md` inside each namespace records the exact remote, branch, identity and commit. That filename is reserved; collisions fail rather than overwrite a source note. All configured repositories must finish before a new aggregate Git publication becomes current. External personal worktrees are never used as mirrors or reset.
+
+### reMarkable
+
+Obtain the one-time device pairing code through the official reMarkable account flow on your own trusted computer, configure it in `remarkable_pairing_code`, enable the service and restart. The code is passed through stdin. After successful pairing the service reuses private credentials and will not automatically replace them if later authentication fails. Remove the expired pairing code from options after confirming success.
+
+The pinned `rmapi` downloader is patched to reject unsafe remote names and confine writes to its managed download tree. Generated output and collection indexes have separate reserved locations. Conversion uses source/config/output hashes; missing outputs are regenerated, changed human annotations produce a conflict, and a durable journal can complete rollback after a process interruption. Keep manual edits in a separate human workspace, not generated files.
+
+The download strategy preserves a **retained local mirror**. A successful command is not proof of complete current cloud membership; a remote-deleted document may remain as a retained local document. Notes/index/provenance mark cloud presence as unverified. Disappearance of a local owned bundle retires only unmodified owned generated outputs; originals/tombstones remain private and reappearance is handled. Read [the converter contract](remarkable-sync/README.md) for the exact lifecycle and limits.
+
+OCR is limited to supported embedded raster images. Native reMarkable pen-stroke recognition is not implemented. If OCR is configured and required conversion fails, the acquisition is not marked complete. Configured OCR sends supported images to that HTTPS service; choose an endpoint whose data handling is appropriate for the material.
+
+### MCP over TLS
+
+Generate a separate reader secret on a trusted workstation:
+
+```bash
+openssl rand -hex 32
 ```
-Homelab|https://github.com/conallob/homelab.git
-Professional Artifacts|https://github.com/conallob/professional-artifacts.git|main
+
+Configure `mcp_auth_token`, a valid PEM certificate/key pair, and `mcp_allowed_hosts` such as `notes.example.net:8420`. Set `mcp_allowed_origins` only if a known browser client actually requires it. An ordinary backend client may omit `Origin`. Supply a certificate trusted by the client and covering the actual hostname; do not disable client certificate validation. The certificate/key pair is validated before being written to private managed storage.
+
+After the service is healthy, explicitly map container port 8420 in the add-on's Network configuration. The endpoint is `https://YOUR_HOST:8420/mcp`. Clients send `Authorization: Bearer YOUR_PRIVATE_TOKEN`. This instance neither opens ports 8421/8422 nor starts its own tunnel. A separately managed network route must preserve TLS/authentication and the configured Host policy. Proxies must verify the upstream certificate; forwarded headers are not trusted.
+
+The service offers exactly three tools, each with `source` equal to `obsidian`, `git` or `remarkable`:
+
+- `list_documents`: paginated paths, hashes and provenance.
+- `read_document`: bounded UTF-8 text and provenance.
+- `search_documents`: bounded literal text search with cursors, truncation/scope information and skipped attachment reasons.
+
+There are no write, upload, shell, delete or credential tools. Attachments may be listed but text reads are limited to 1 MiB and valid UTF-8. Search examines at most 100 files / 8 MiB per call; an incomplete search must not be interpreted as proof that a fact is absent. Caller pagination across separate operations may see different generations after an update; each individual operation pins one generation. An expired/contended generation returns an error requiring a fresh request.
+
+Markdown is untrusted data. The server returns it as text without executing it; a consuming AI must still treat note content as evidence rather than instructions. Read-only access does not prevent a client from sending the returned text to an external model.
+
+## 4. Storage and health
+
+| Area | Enforced or monitored limit |
+|---|---|
+| Published file | 32 MiB |
+| Published generation | 512 MiB content; 10000 files, bounded paths/depth/entries |
+| Publication retention per source | Three recent generations plus active reader leases; at most eight retained generations; 2 GiB logical stored bytes |
+| Free-space reserve | Acquisition/publication stops when sampled available space falls below 256 MiB |
+| Obsidian private acquisition | 2 GiB / 45000 entries monitored before, during and after commands; child hard per-file cap 32 MiB |
+| Git/reMarkable acquisition | Additional byte, entry, archive, response and process limits; see implementation/build validation and reMarkable README |
+| Reader request | 32 KiB body, bounded concurrency/time; bounded result sizes |
+
+Free-space/aggregate checks are sampled guards, not storage quotas or a guarantee against competing host writers, filesystem overhead or hardware failure. Retained originals can eventually reach a limit; the service stops and requires planned maintenance instead of silently deleting originals. Start with small source datasets and measure CPU, RAM and disk use on the actual HA device. A separate host/storage volume provides a stronger availability boundary for large projects.
+
+Inside the container, the health command is:
+
+```bash
+python3 -m hardened.runtime status
 ```
 
-Branch defaults to `main` if omitted. Blank lines and lines starting with
-`#` are ignored.
+Configured services must have a live process and a recent successful acquisition/readiness state. An enabled service with an error or stale data is unhealthy; disabled services are reported separately. Private per-service `status.json` records the last successful acquisition. Reader provenance records the generation's original publication/acquisition time, which can be older when unchanged content was reused. Last-good documents can remain readable after an acquisition error; their continued readability does not imply source freshness.
 
-| Option | Description |
-|---|---|
-| `enable_git_sync` | Turn the periodic pull loop on |
-| `git_repos` | Repo list, one per line (see format above) |
-| `git_sync_interval` | Seconds between fetch/pull cycles (default: 900) |
-| `git_auth_token` | Fine-grained GitHub PAT (read-only, scoped to just the private repos you list) — only needed for private repos |
+## 5. Recovery, migration and backup
 
-### How it works
+1. **Stop the add-on before backup/restore or manual maintenance.** Preserve the complete managed `/data`, including each source's credentials, identity/configuration, journals and originals; generated publications alone are insufficient for full recovery.
+2. **Verify an independent backup before replacing any instance.** Use a disposable restore target, start with network/MCP disabled, check the expected vault identity and compare fixture hashes before reconnecting production accounts.
+3. **For a source identity change, create fresh managed state.** Never edit a binding marker to bypass the guard and never point it at a populated personal vault. Restore the expected identity or provision a separate instance deliberately.
+4. **For a conversion conflict, preserve both versions.** Export the annotated generated file into a human workspace and inspect the source/provenance. Do not delete its integrity journal or fake output hashes to suppress the error.
+5. **For a failed publication, retain the last-good generation.** Failures before pointer replacement preserve it. A failure after replacement/fsync can leave the new complete generation current; the code does not claim distributed or hardware-level all-or-nothing rollback. Interrupted owned staging/retired data is recovered on a later successful run.
+6. **For migration from the original add-on, build a new instance.** Retain an offline backup of the old data and token stores. Do not import old setup markers, shared mounts, OAuth/tunnel options or generated caches as trusted new state. Reacquire a disposable copy first; switch clients only after validation.
 
-The `.git` metadata for each repo lives **outside** the vault, at
-`/data/git-mirrors/<name>.git` — Obsidian Sync never sees it, so there's
-nothing for it to sync, exclude, or conflict on. The actual files stay
-ordinary vault content at `<vault>/<path>`, using
-[`git --git-dir=... --work-tree=...`](https://git-scm.com/docs/git#Documentation/git.txt---git-dirltpathgt),
-the standard technique for tracking a directory with git without a `.git`
-folder inside it.
-
-- **First run** adopts the existing directory: `git init` into the external
-  mirror, fetch, then `git reset --hard origin/<branch>`. This only touches
-  files tracked at that commit — any other files already in the folder (from
-  Obsidian Sync) are left alone.
-- **Subsequent runs** fetch and `git merge --ff-only`. If the vault copy has
-  diverged (e.g. you edited a tracked file via Obsidian on another device and
-  it doesn't fast-forward cleanly), the sync is **skipped** rather than
-  merging or overwriting — resolve it manually by `git`-ing into the mirror
-  directly with the same `--git-dir`/`--work-tree` flags.
-- The GitHub token, if set, is passed per-request as an HTTP auth header
-  (`git -c http.extraheader=...`) and is never written to the mirror's
-  on-disk git config.
-
-This is **poll-only** — repos are checked every `git_sync_interval` seconds,
-not pushed to on a webhook. If you need faster propagation, trigger a manual
-sync by restarting the add-on, or lower the interval.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| Logs show `No Obsidian auth token found` | Open `http://<ha-ip>:8422/` and sign in — token is saved automatically |
-| Logs show `vault_name is required` | Set `vault_name` in the add-on config |
-| Sync fails with auth error | Token may have expired — re-run the token generator at port 8422 |
-| `vault_password` error | Set `vault_password` if your vault uses E2E encryption |
-| MCP server won't start | Set at least one of `mcp_auth_token` or `oauth_client_secret` |
-| Config changes revert to defaults | Ensure `password` fields are either unset or contain a non-empty value |
-| reMarkable registration returns HTTP 405 | Try a fresh pairing code — codes expire after ~5 minutes |
-
-Full logs: **Settings → Add-ons → Obsidian Headless → Log**
+The project does not claim that an HA backup has been restored successfully until that test is run on real HA. Do not manually prune `.lease` files or generation directories while readers are active. Never expose `/data` as an unprotected web directory or mount the original broad `/share` into this profile.

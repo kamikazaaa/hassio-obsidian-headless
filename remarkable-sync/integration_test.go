@@ -72,10 +72,10 @@ func TestRunSyncEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Notes.md: %v", err)
 	}
-	if !strings.Contains(string(note1), "  - rm:work\n") {
+	if !strings.Contains(string(note1), "  - \"rm:work\"\n") {
 		t.Errorf("Notes.md missing prefixed tag rm:work:\n%s", note1)
 	}
-	if !strings.Contains(string(note1), "  - remarkable\n") {
+	if !strings.Contains(string(note1), "  - \"remarkable\"\n") {
 		t.Errorf("Notes.md missing extra tag remarkable:\n%s", note1)
 	}
 
@@ -83,14 +83,14 @@ func TestRunSyncEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Ideas.md: %v", err)
 	}
-	if !strings.Contains(string(note2), "  - remarkable\n") {
+	if !strings.Contains(string(note2), "  - \"remarkable\"\n") {
 		t.Errorf("Ideas.md (no native labels) missing extra tag:\n%s", note2)
 	}
 	if !strings.Contains(string(note2), "bookmarked: true") {
 		t.Errorf("Ideas.md missing bookmarked: true from pinned metadata:\n%s", note2)
 	}
 
-	index, err := os.ReadFile(filepath.Join(destRoot, "index.md"))
+	index, err := os.ReadFile(filepath.Join(destRoot, "_remarkable_collection", "index.md"))
 	if err != nil {
 		t.Fatalf("read index.md: %v", err)
 	}

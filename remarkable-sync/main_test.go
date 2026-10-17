@@ -140,7 +140,7 @@ func TestExtractBlobMetadataAndWriteNote(t *testing.T) {
 	}
 	body := string(out)
 	for _, tag := range want {
-		if !strings.Contains(body, "  - "+tag+"\n") {
+		if !strings.Contains(body, "  - \""+tag+"\"\n") {
 			t.Errorf("note frontmatter missing tag %q; body:\n%s", tag, body)
 		}
 	}

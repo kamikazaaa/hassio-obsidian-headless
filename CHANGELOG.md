@@ -1,3 +1,22 @@
+# Hardened development profile
+
+## 0.1.0-dev
+
+- Replace open token/pairing UIs with managed configuration and private stdin provisioning.
+- Isolate source workers and credentials; remove shared vault mounts and obsolete OAuth/tunnel modes.
+- Replace destructive Git synchronization with isolated immutable commit acquisition.
+- Add content-aware reMarkable conversion, annotation protection, private originals and durable crash recovery.
+- Publish bounded immutable generations with SHA-256 manifests, safe paths, reader leases and recent-version retention.
+- Replace upstream MCP application with an authenticated TLS service offering only list, read and bounded search.
+- Pin build/dependency inputs and replace automatic upstream release jobs with read-only validation CI.
+- Add behavioral tests and document incompatible changes, resource limits and uncompleted real HA/cloud/restore gates.
+
+This is a development source profile, not a verified production release.
+
+---
+
+## Original upstream history
+
 ## 0.0.22
 
 ## What's Changed

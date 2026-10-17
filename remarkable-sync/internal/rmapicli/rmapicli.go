@@ -7,13 +7,10 @@
 package rmapicli
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -22,7 +19,7 @@ const binary = "rmapi"
 // configPath returns the path rmapi reads/writes its device+user tokens to.
 // Mirrors rmapi's own resolution order (RMAPI_CONFIG env var, then ~/.rmapi)
 // closely enough for an existence check — this add-on always sets
-// RMAPI_CONFIG explicitly (build-env.sh), so the fallback rarely matters.
+// RMAPI_CONFIG explicitly (managed runtime), so the fallback rarely matters.
 func configPath() string {
 	if p := os.Getenv("RMAPI_CONFIG"); p != "" {
 		return p
@@ -34,21 +31,6 @@ func configPath() string {
 	return filepath.Join(home, ".rmapi")
 }
 
-// Register pipes a one-time pairing code to rmapi, completing device
-// registration. rmapi reads the code as a single newline-terminated line on
-// stdin — no TTY is required. On success rmapi persists its own device/user
-// tokens to its config file (RMAPI_CONFIG env var, set in build-env.sh).
-func Register(ctx context.Context, code string) error {
-	cmd := exec.CommandContext(ctx, binary, "ls")
-	cmd.Stdin = strings.NewReader(code + "\n")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rmapi registration: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
-}
-
 // IsAuthenticated reports whether rmapi already has a usable device token.
 //
 // Checks for the config file first rather than always shelling out: with no
@@ -56,28 +38,34 @@ func Register(ctx context.Context, code string) error {
 // prompt, reading from stdin — which we deliberately don't supply here (it
 // defaults to /dev/null) — and depending on how rmapi handles that EOF, the
 // process can retry for the full context timeout before giving up. Calling
-// this from an HTTP handler (as the registration UI does, on every page
+// this from an HTTP handler (as the old registration UI did, on every page
 // load) made the whole page hang for up to 30s while unregistered, which is
 // indistinguishable from the server not listening at all.
+func HasCredentials() bool {
+	info, err := os.Lstat(configPath())
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0077 == 0
+}
+
 func IsAuthenticated(ctx context.Context) bool {
-	if _, err := os.Stat(configPath()); err != nil {
+	if !HasCredentials() {
 		return false
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "ls")
-	return cmd.Run() == nil
+	workspace := os.Getenv("REMARKABLE_CACHE_DIR")
+	if workspace == "" {
+		workspace = filepath.Join(filepath.Dir(configPath()), "private")
+	}
+	return runLimited(ctx, workspace, defaultPolicy, "-ni", "ls") == nil
 }
 
 // SyncTree recursively mirrors remotePath into outputDir as .rmdoc bundles,
 // preserving reMarkable's folder hierarchy as real directories. Incremental:
 // only files whose remote copy is newer than the local one are re-fetched.
 func SyncTree(ctx context.Context, remotePath, outputDir string) error {
-	cmd := exec.CommandContext(ctx, binary, "mget", "-i", "-o", outputDir, remotePath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rmapi mget: %w: %s", err, strings.TrimSpace(stderr.String()))
+	if err := runLimited(ctx, filepath.Dir(outputDir), defaultPolicy, "-ni", "mget", "-i", "-o", outputDir, remotePath); err != nil {
+		return fmt.Errorf("rmapi acquisition: %w", err)
 	}
 	return nil
 }

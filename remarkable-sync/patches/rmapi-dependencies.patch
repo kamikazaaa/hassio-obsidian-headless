@@ -1,0 +1,208 @@
+diff --git a/api/api.go b/api/api.go
+index 0334f06..4b40de9 100644
+--- a/api/api.go
++++ b/api/api.go
+@@ -7,7 +7,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"github.com/golang-jwt/jwt"
++	"github.com/golang-jwt/jwt/v4"
+ 	"github.com/juruen/rmapi/api/sync15"
+ 	"github.com/juruen/rmapi/filetree"
+ 	"github.com/juruen/rmapi/model"
+@@ -57,7 +57,7 @@ type UserInfo struct {
+ }
+ 
+ func ParseToken(userToken string) (token *UserInfo, err error) {
+-	claims := UserToken{}
++	claims := UserToken{StandardClaims: &jwt.StandardClaims{}}
+ 	_, _, err = (&jwt.Parser{}).ParseUnverified(userToken, &claims)
+ 
+ 	if err != nil {
+diff --git a/api/auth.go b/api/auth.go
+index 0ec3456..77818a4 100644
+--- a/api/auth.go
++++ b/api/auth.go
+@@ -83,7 +83,7 @@ func readCode() string {
+ func newDeviceToken(http *transport.HttpClientCtx, code string) (string, error) {
+ 	uuid := uuid.New()
+ 
+-	req := model.DeviceTokenRequest{code, defaultDeviceDesc, uuid.String()}
++	req := model.DeviceTokenRequest{Code: code, DeviceDesc: defaultDeviceDesc, DeviceId: uuid.String()}
+ 
+ 	resp := transport.BodyString{}
+ 	err := http.Post(transport.EmptyBearer, config.NewTokenDevice, req, &resp)
+diff --git a/api/token_hardening_test.go b/api/token_hardening_test.go
+new file mode 100644
+index 0000000..4178170
+--- /dev/null
++++ b/api/token_hardening_test.go
+@@ -0,0 +1,42 @@
++package api
++
++import (
++	"encoding/base64"
++	"fmt"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++func tokenFixture(payload string) string {
++	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".unused"
++}
++func TestParseTokenRejectsExcessSegmentsWithoutAmplifiedAllocation(t *testing.T) {
++	malicious := strings.Repeat(".", 1<<20)
++	runtime.GC()
++	var before, after runtime.MemStats
++	runtime.ReadMemStats(&before)
++	if _, err := ParseToken(malicious); err == nil {
++		t.Fatal("malformed token accepted")
++	}
++	runtime.ReadMemStats(&after)
++	if used := after.TotalAlloc - before.TotalAlloc; used > 4<<20 {
++		t.Fatalf("malformed token caused amplified allocation: %d bytes", used)
++	}
++}
++func TestParseTokenCompatibilityAndMissingExpiry(t *testing.T) {
++	for _, expiry := range []string{"", fmt.Sprintf(`,"exp":%d`, time.Now().Add(time.Hour).Unix())} {
++		token := tokenFixture(`{"auth0-profile":{"email":"fixture@example.invalid"},"scopes":"sync:fox"` + expiry + `}`)
++		parsed, err := ParseToken(token)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if parsed.User != "fixture@example.invalid" || parsed.SyncVersion != Version15 {
++			t.Fatal("valid metadata token changed")
++		}
++	}
++	if _, err := ParseToken(tokenFixture(`{"exp":1}`)); err == nil {
++		t.Fatal("expired token accepted")
++	}
++}
+diff --git a/go.mod b/go.mod
+index e0bfa59..be4c882 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,19 +1,19 @@
+ module github.com/juruen/rmapi
+ 
+-go 1.23.0
++go 1.26.0
+ 
+ replace github.com/flynn-archive/go-shlex => github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
+ 
+ require (
+ 	github.com/abiosoft/ishell v2.0.0+incompatible
+-	github.com/golang-jwt/jwt v3.2.2+incompatible
++	github.com/golang-jwt/jwt/v4 v4.5.2
+ 	github.com/google/uuid v1.1.1
+ 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
+ 	github.com/ogier/pflag v0.0.1
+ 	github.com/pkg/errors v0.8.1
+ 	github.com/stretchr/testify v1.5.1
+ 	github.com/unidoc/unipdf/v3 v3.6.1
+-	golang.org/x/sync v0.1.0
++	golang.org/x/sync v0.24.0
+ 	gopkg.in/yaml.v2 v2.2.8
+ )
+ 
+@@ -32,8 +32,9 @@ require (
+ 	github.com/mattn/go-colorable v0.1.6 // indirect
+ 	github.com/mattn/go-isatty v0.0.12 // indirect
+ 	github.com/pmezard/go-difflib v1.0.0 // indirect
+-	golang.org/x/image v0.5.0 // indirect
+-	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f // indirect
+-	golang.org/x/text v0.7.0 // indirect
++	golang.org/x/crypto v0.58.0 // indirect
++	golang.org/x/image v0.47.0 // indirect
++	golang.org/x/sys v0.49.0 // indirect
++	golang.org/x/text v0.43.0 // indirect
+ 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index a16e838..3e725d2 100644
+--- a/go.sum
++++ b/go.sum
+@@ -19,8 +19,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
+ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/fatih/color v1.9.0 h1:8xPHl4/q1VyqGIPif1F+1V3Y3lSmrq01EabUW3CoW5s=
+ github.com/fatih/color v1.9.0/go.mod h1:eQcE1qtQxscV5RaZvpXrrb8Drkc3/DdQ+uUYCNjL+zU=
+-github.com/golang-jwt/jwt v3.2.2+incompatible h1:IfV12K8xAKAnZqdXVzCZ+TOjboZ2keLg81eXfW3O+oY=
+-github.com/golang-jwt/jwt v3.2.2+incompatible/go.mod h1:8pz2t5EyA70fFQQSrl6XZXzqecmYZeUEB8OUGHkxJ+I=
++github.com/golang-jwt/jwt/v4 v4.5.2 h1:YtQM7lnr8iZ+j5q71MGKkNw9Mn7AjHM68uc9g5fXeUI=
++github.com/golang-jwt/jwt/v4 v4.5.2/go.mod h1:m21LjoU+eqJr34lmDMbreY2eSTRJ1cv77w39/MY0Ch0=
+ github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 h1:DACJavvAHhabrF08vX0COfcOBJRhZ8lUbR+ZWIs0Y5g=
+ github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0/go.mod h1:E/TSTwGwJL78qG/PmXZO1EjYhfJinVAhrmmHX6Z8B9k=
+ github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaUGG7oYTSPP8MxqL4YI3kZKwcP4=
+@@ -55,46 +55,29 @@ github.com/stretchr/testify v1.5.1 h1:nOGnQDM7FYENwehXlg/kFVnos3rEvtKTjRvOWSzb6H
+ github.com/stretchr/testify v1.5.1/go.mod h1:5W2xD1RspED5o8YsWQXVCued0rvSQ+mT+I5cxcmMvtA=
+ github.com/unidoc/unipdf/v3 v3.6.1 h1:T9bb9NkFRuv3EKFranrgyCBS4sFV9LKc20UvuDJxhCU=
+ github.com/unidoc/unipdf/v3 v3.6.1/go.mod h1:oB/vP2a5OJfA5Op0X26CFX1JC8yECO2w+f6pMO/zpoo=
+-github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+ golang.org/x/crypto v0.0.0-20190605123033-f99c8df09eb5/go.mod h1:yigFU9vqHzYiE8UmvKecakEJjdnWj3jj499lnFckfCI=
+-golang.org/x/crypto v0.0.0-20210921155107-089bfa567519 h1:7I4JAnoQBe7ZtJcBaYHi5UtiO8tQHbUSXxL+pnGRANg=
+-golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
++golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
++golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
+ golang.org/x/image v0.0.0-20181116024801-cd38e8056d9b/go.mod h1:ux5Hcp/YLpHSI86hEcLt0YII63i6oz57MZXIpbrjZUs=
+-golang.org/x/image v0.5.0 h1:5JMiNunQeQw++mMOz48/ISeNu3Iweh/JaZU8ZLqHRrI=
+-golang.org/x/image v0.5.0/go.mod h1:FVC7BI/5Ym8R25iw5OLsgshdUBbT1h5jZTpA+mvAdZ4=
+-golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
++golang.org/x/image v0.47.0 h1:za/8gVz++PPZqmZJBNSISICN5Rrj5zixP/8K++fgmqo=
++golang.org/x/image v0.47.0/go.mod h1:IkN5o4A7vq55vXN8FWjjnhg9Rs2GOtffqsSi9mWAKYE=
+ golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+-golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+-golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+-golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+-golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
+-golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
++golang.org/x/sync v0.24.0 h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=
++golang.org/x/sync v0.24.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190222072716-a9d3bda3a223/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20191026070338-33540a1f6037/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20200116001909-b77594299b42/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20200223170610-d5e6a3e2c0ae/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f h1:v4INt8xihDGvnrfjMDVXGxw9wrfxYyCjk0KbXjhR55s=
+-golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+-golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
++golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
++golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.2/go.mod h1:bEr9sfX3Q8Zfm5fL9x+3itogRgK3+ptLWKqgva+5dAk=
+-golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+-golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+-golang.org/x/text v0.7.0 h1:4BRB4x83lYWy72KwLD/qYDuTu7q9PjSagHvijDw7cLo=
+-golang.org/x/text v0.7.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
++golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=
++golang.org/x/text v0.43.0/go.mod h1:hbSIYA/amXcRXTFSZqh8tWHEoqRvvbKPJ2uz/KU+a+s=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+-golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+-golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+-golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 h1:YR8cESwS4TdDjEe65xsg0ogRM/Nc3DYOhEAlW+xobZo=
+ gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+diff --git a/shell/mget.go b/shell/mget.go
+index 6eae642..f80b380 100644
+--- a/shell/mget.go
++++ b/shell/mget.go
+@@ -62,7 +62,7 @@ func mgetCmd(ctx *ShellCtxt) *ishell.Cmd {
+ 			fileMap[target] = struct{}{}
+ 
+ 			visitor := filetree.FileTreeVistor{
+-				func(currentNode *model.Node, currentPath []string) bool {
++				Visit: func(currentNode *model.Node, currentPath []string) bool {
+ 					idxDir := 0
+ 					if srcName == "." && len(currentPath) > 0 {
+ 						idxDir = 1
