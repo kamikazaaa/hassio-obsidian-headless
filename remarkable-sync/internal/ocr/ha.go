@@ -5,7 +5,9 @@ package ocr
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +39,7 @@ func New(haURL, token, entity string) *Client {
 		haURL:  strings.TrimRight(haURL, "/"),
 		token:  token,
 		entity: entity,
-		http:   &http.Client{Timeout: 60 * time.Second},
+		http:   &http.Client{Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return fmt.Errorf("OCR redirects are forbidden") }},
 	}
 }
 
@@ -63,7 +65,7 @@ func (c *Client) Recognise(imageBytes []byte) (string, error) {
 	}
 	req, err := http.NewRequest(http.MethodPost, c.haURL, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid OCR endpoint configuration")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
@@ -71,12 +73,18 @@ func (c *Client) Recognise(imageBytes []byte) (string, error) {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("OCR request: %w", err)
+		return "", fmt.Errorf("OCR request failed")
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (4<<20)+1))
+	if err != nil {
+		return "", fmt.Errorf("read OCR response: %w", err)
+	}
+	if len(raw) > 4<<20 {
+		return "", fmt.Errorf("OCR response exceeds size limit")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("OCR endpoint (HTTP %d): %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return "", fmt.Errorf("OCR endpoint returned HTTP %d", resp.StatusCode)
 	}
 	var result ocrResponse
 	if err := json.Unmarshal(raw, &result); err != nil {
@@ -87,4 +95,11 @@ func (c *Client) Recognise(imageBytes []byte) (string, error) {
 		return "", nil
 	}
 	return result.Text, nil
+}
+
+// Fingerprint includes all effective OCR settings without persisting credentials.
+func (c *Client) Fingerprint() string {
+	raw, _ := json.Marshal([]string{c.haURL, c.token, c.entity})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

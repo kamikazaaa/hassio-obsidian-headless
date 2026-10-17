@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stop disabled services and permanent configuration failures.
+# s6-supervise interprets finish exit 125 as a permanent service-down request.
+case "$1" in
+  0|64|78) exit 125 ;;
+  130|143) exit 0 ;;
+  256) case "$2" in 2|15) exit 0 ;; esac ;;
+esac
+# A finish timeout of 35000 ms permits this bounded retry delay. Replacing
+# the shell keeps the delay itself under s6 supervision without an orphan child.
+exec sleep 30

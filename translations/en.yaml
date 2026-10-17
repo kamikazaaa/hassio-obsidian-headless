@@ -1,116 +1,69 @@
 configuration:
   obsidian_auth_token:
-    name: Obsidian Auth Token
-    description: >-
-      Your Obsidian Sync auth token. Obtain it by running:
-      `npx obsidian-headless get-token` and following the prompts.
+    name: Obsidian Sync authentication token
+    description: Official Obsidian Headless token obtained outside this addon; stored only in managed options and the Obsidian service environment.
   vault_name:
-    name: Vault Name
-    description: >-
-      The exact name of your Obsidian vault as it appears in Obsidian Sync.
-      Case-sensitive. Run `ob sync-list-remote` to confirm the name.
+    name: Remote vault ID or exact name
+    description: Use the stable remote ID when possible. Changing the source on an existing workspace is refused; use a fresh addon instance.
   vault_password:
-    name: Vault Encryption Password
-    description: >-
-      Only required if your vault has end-to-end encryption enabled
-      (Settings → Sync → Encryption password in Obsidian). Leave blank if not used.
-  enable_mcp:
-    name: Enable MCP Server
-    description: >-
-      Expose your vault as a remote MCP server so AI assistants (e.g. Claude)
-      can read and search your notes.
-  mcp_auth_token:
-    name: MCP Bearer Token
-    description: >-
-      A long random secret used to authenticate MCP clients via Bearer token.
-      Generate with: `openssl rand -hex 32`
-      Required when enable_mcp is true (unless using OAuth).
-  oauth_client_id:
-    name: OAuth Client ID
-    description: >-
-      OAuth 2.1 client identifier. Defaults to 'vault-mcp-client'.
-      Only needed when using OAuth authentication for the MCP server.
-  oauth_client_secret:
-    name: OAuth Client Secret
-    description: >-
-      OAuth 2.1 client secret. Required when using OAuth for MCP auth.
-      Generate with: `openssl rand -hex 32`
-  tunnel_mode:
-    name: Tunnel Mode
-    description: >-
-      How the MCP server is exposed externally.
-      'none': only reachable on your local network (port 8420).
-      'tailscale': exposed on your Tailnet via Tailscale. Requires
-      oauth_client_secret.
-      'https': expects an external reverse proxy terminating TLS.
-      'cloudflare': traffic arrives via a Cloudflare Tunnel managed by the
-      separate cloudflared add-on. Requires oauth_client_secret; pair with
-      Cloudflare Access for real per-user auth.
-  tailscale_auth_key:
-    name: Tailscale Auth Key
-    description: >-
-      Tailscale auth key for this device. Generate a reusable key at
-      https://login.tailscale.com/admin/settings/keys
-      Required when tunnel_mode is 'tailscale'.
-  tls_cert_path:
-    name: TLS Certificate Path
-    description: >-
-      Path to your TLS certificate file (PEM format).
-      The /ssl directory is mapped from your HA SSL folder.
-      Default: /ssl/fullchain.pem
-  tls_key_path:
-    name: TLS Private Key Path
-    description: >-
-      Path to your TLS private key file (PEM format).
-      Default: /ssl/privkey.pem
-  enable_remarkable:
-    name: Enable reMarkable Sync
-    description: >-
-      Sync documents from your reMarkable tablet into your Obsidian vault.
-      Pair your device at the registration UI on port 8421 — no config field
-      needed for credentials. One-way sync: reMarkable → Obsidian.
-  remarkable_output_dir:
-    name: reMarkable Destination Folder
-    description: >-
-      Subfolder inside your Obsidian vault where synced notes are stored.
-      Default: 'reMarkable'.
-  remarkable_sync_interval:
-    name: Sync Interval (seconds)
-    description: >-
-      How often to poll reMarkable Cloud for new/updated documents, in
-      seconds. Default: 300.
-  remarkable_tag_prefix:
-    name: reMarkable Tag Prefix
-    description: >-
-      Prepended to every reMarkable label mapped to an Obsidian tag, e.g.
-      'remarkable:' turns the label 'mylabel' into 'remarkable:mylabel'.
-      Leave blank to overlay reMarkable labels into Obsidian tags unchanged.
-  remarkable_extra_tags:
-    name: reMarkable Extra Tags
-    description: >-
-      Comma-separated tags added to every document synced from reMarkable,
-      in addition to its own labels. Example: 'remarkable'.
+    name: Vault encryption password
+    description: Required for end-to-end encrypted vaults. Sent through private standard input to official setup. The official prompt does not support trailing whitespace; such passwords are refused.
+  obsidian_sync_interval:
+    name: Obsidian acquisition interval
+    description: Seconds between one-shot pull-only synchronization and immutable publication; minimum 30.
   enable_git_sync:
-    name: Enable Git Vault Sync
-    description: >-
-      Periodically pull git repos that live as subdirectories of the vault.
-      Obsidian Sync does not propagate .git metadata, so this fetches
-      directly from each repo's remote instead.
+    name: Enable independent Git acquisition
+    description: Fetch into an isolated Git workspace and publish immutable commit trees for read-only access.
   git_repos:
-    name: Git Repos
-    description: >-
-      One repo per line: '<vault-relative-path>|<remote-url>[|<branch>]'.
-      Branch defaults to 'main'. Example: 'Homelab|https://github.com/you/homelab.git'.
-  git_sync_interval:
-    name: Git Sync Interval (seconds)
-    description: >-
-      How often to fetch/pull all configured git_repos, in seconds.
-      Default: 900.
+    name: Git repositories
+    description: "One independent source per line: <namespace>|<HTTPS remote URL>[|<branch>]. Existing vault folders are never adopted."
   git_auth_token:
-    name: Git Auth Token
-    description: >-
-      Fine-grained GitHub personal access token, read-only, scoped to just
-      the private repos in git_repos. Not needed for public repos.
-
+    name: Git read-only access token
+    description: Optional repository-scoped read-only token. Never placed in remote URLs or shared with other services.
+  git_sync_interval:
+    name: Git acquisition interval
+    description: Seconds between acquisitions; minimum 30.
+  enable_remarkable:
+    name: Enable isolated reMarkable acquisition
+    description: Download and convert in a private workspace, then publish generated documents after successful conversion.
+  remarkable_pairing_code:
+    name: reMarkable one-time pairing code
+    description: Enter the official one-time code for initial pairing. Sent only to rmapi standard input. Clear after successful pairing; existing credentials are never automatically replaced.
+  remarkable_sync_interval:
+    name: reMarkable acquisition interval
+    description: Seconds between acquisitions; minimum 30.
+  remarkable_tag_prefix:
+    name: reMarkable tag prefix
+    description: Prefix for device labels mapped to generated document tags.
+  remarkable_extra_tags:
+    name: Additional reMarkable tags
+    description: Comma-separated tags added to generated documents.
+  ha_ocr_url:
+    name: Optional OCR HTTPS endpoint
+    description: HTTPS endpoint accepting rendered page images. OCR failures prevent publication when images require transcription. Native pen strokes are not rendered by this addon.
+  ha_ocr_token:
+    name: OCR endpoint access token
+    description: Optional credential delivered only to the reMarkable service.
+  ha_ocr_entity:
+    name: OCR entity identifier
+    description: Optional image processing entity identifier included in OCR requests.
+  enable_mcp:
+    name: Enable read-only MCP
+    description: Requires bearer authentication, a valid matching TLS certificate/key pair, and an exact allowed-host policy. Publish port 8420 explicitly in Network after configuration.
+  mcp_auth_token:
+    name: MCP bearer token
+    description: At least 32 random bearer-safe characters; use a 64-character random hexadecimal secret. Generate outside the addon and configure clients with the same secret.
+  mcp_tls_cert:
+    name: MCP TLS certificate PEM
+    description: Operator-supplied PEM certificate chain for the client-facing hostname. Enter multiline PEM in the managed YAML options editor.
+  mcp_tls_key:
+    name: MCP TLS private key PEM
+    description: Matching unencrypted private key in PEM format. Enter multiline PEM in managed options; validated and stored with private MCP service permissions.
+  mcp_allowed_hosts:
+    name: Allowed MCP hosts
+    description: "Comma-separated exact Host header values including the published port when used, for example notes.example.com:8420. No wildcards."
+  mcp_allowed_origins:
+    name: Allowed MCP browser origins
+    description: Comma-separated exact HTTPS origins for authorized browser clients. Leave empty for clients that send no Origin header.
 network:
-  8420/tcp: MCP HTTP server port
+  8420/tcp: Authenticated read-only MCP over TLS; unbound by default

@@ -1,43 +1,11 @@
-# hassio-obsidian-headless
+# Development guidance
 
-Home Assistant add-on that runs Obsidian Sync as a headless daemon and optionally exposes the vault as a remote MCP server.
+The hardened source profile replaces the original project's runtime and distribution assumptions. Read `README.md`, `DOCS.md`, `SECURITY.md`, `docs/hardening-plan.md` and `docs/validation.md` before making changes.
 
-## Architecture
+Preserve separate source UIDs, fixed private paths, the shared read-only publication contract, strict options and literal command arguments. Never reintroduce the credential web UIs, configuration eval, a broad writable share mount, personal-worktree Git reset, reader mutations or implicit public exposure. Keep complete previous publications and original source data on failed acquisition.
 
-- **Dockerfile** — multi-stage build: `mcp-builder` (Python/pip) → arch-specific HA base image
-- **config.yaml** — HA Supervisor add-on manifest (version, schema, port mappings)
-- **rootfs/** — s6-overlay service definitions and helper scripts copied into the image
+Use meaningful behavioral regression tests for integrity and security changes. Test real filesystem behavior and the official MCP transport where applicable. `pytest` is needed for the complete Python suite; unittest discovery alone does not run the MCP tests. UID and loopback tests must run in a disposable environment that supports the actual permissions. Do not misreport skipped UID/ARM/HA/image tests as passed.
 
-## Container image
+The Dockerfile builds from pinned inputs. Dependency updates require lock/hash/provenance review and renewed tests. CI has no publishing permissions or automatic upstream release. Retain the original BSD license and check each dependency's terms before binary redistribution. Never commit credentials, actual vault material or personal project context.
 
-Published to `ghcr.io/conallob/hassio-obsidian-headless`.
-
-- Multi-arch target: `aarch64` and `amd64`
-- Workflow: `.github/workflows/build-image.yaml`
-- CI uses native runners (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for aarch64) with podman — no QEMU emulation
-- `io.hass.version` label is set from the git tag at build time via `BUILD_VERSION` arg (defaults to `dev` for local builds)
-
-## Development workflow
-
-- Edit `Dockerfile` or `rootfs/` scripts, then test locally:
-  ```
-  podman build --build-arg BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm \
-    --build-arg BUILD_ARCH=aarch64 -t obsidian-headless:dev .
-  ```
-- CI cuts a new image on every push to `main` and on version tags (`v*`)
-
-## Releasing
-
-1. Update `version` in `config.yaml`
-2. Commit and push to `main` — CI builds and pushes `:edge` + short SHA tags
-3. Tag the commit `v<version>` — CI pushes the semver tag and `io.hass.version` label is set from the tag
-
-## Key dependencies
-
-| Dependency | Source |
-|---|---|
-| `obsidian-headless` | npm (global) — official Obsidian Sync CLI |
-| `obsidian-web-mcp` | cloned from `jimprosser/obsidian-web-mcp` HEAD |
-| Node 22 LTS | NodeSource `setup_22.x` script |
-| Base image (amd64) | `ghcr.io/home-assistant/amd64-base-debian:bookworm` |
-| Base image (aarch64) | `ghcr.io/home-assistant/aarch64-base-debian:bookworm` |
+The source-project root is the local add-on build context. It is not a ready-made add-on-store repository. Follow the validated build/migration gates rather than assuming the original upstream distribution workflow still applies.

@@ -1,12 +1,10 @@
-name: Obsidian Headless
-version: "0.0.9"
-slug: obsidian_headless
+name: Obsidian Headless Hardened
+version: "0.1.0-dev"
+slug: obsidian_headless_hardened
 description: >-
-  Syncs your Obsidian vault via Obsidian Sync (headless daemon). Optionally
-  exposes the vault as a remote MCP server with bearer-token or OAuth 2.1
-  authentication. Supports Tailscale and direct HTTPS access.
-url: https://github.com/conallob/hassio-obsidian-headless
-image: ghcr.io/conallob/hassio-obsidian-headless
+  Isolated pull-only Obsidian Sync with optional Git and reMarkable acquisition.
+  Read-only authenticated MCP over operator-configured TLS. Local build preview.
+url: https://github.com/kamikazaaa/hassio-obsidian-headless
 icon: true
 logo: true
 arch:
@@ -15,143 +13,53 @@ arch:
 init: false
 homeassistant_api: false
 host_network: false
-
 ports:
-  8420/tcp: 8420
-  8421/tcp: 8421
-  8422/tcp: 8422
-
+  8420/tcp: null
 ports_description:
-  8420/tcp: MCP HTTP server (obsidian-vault-mcp, streamable-HTTP transport)
-  8421/tcp: reMarkable device registration UI (open in browser to pair your tablet)
-  8422/tcp: Obsidian token generator UI (open in browser to get your obsidian_auth_token)
-
-map:
-  - type: share
-    path: /share/obsidian-vault
-    read_only: false
-  - type: ssl
-    read_only: true
-
+  8420/tcp: Read-only MCP over TLS; enable explicitly after configuring authentication and certificate
 options:
-  # --- Obsidian Sync ---
-  # Obtained via http://<ha-ip>:8422/ or `npx obsidian-headless get-token`.
-  # Optional if already saved by the token generator UI.
-  obsidian_auth_token: ~
-
-  # Name of the remote vault to sync (from ob sync-list-remote)
+  obsidian_auth_token: ""
   vault_name: ""
-
-  # E2E encryption password — only required if your vault uses end-to-end encryption
-  vault_password: ~
-
-  # --- MCP server (opt-in) ---
-  enable_mcp: false
-
-  # MCP auth — set at least one when enable_mcp is true.
-  # Bearer-token mode: set mcp_auth_token to a long random secret.
-  # OAuth mode: set oauth_client_secret (and optionally oauth_client_id).
-  mcp_auth_token: ~
-  oauth_client_id: "vault-mcp-client"
-  oauth_client_secret: ~
-
-  # --- Tunnel mode (only relevant when enable_mcp is true) ---
-  # "none"       — port 8420 exposed directly (use HA firewall / VPN)
-  # "tailscale"  — add-on joins your tailnet; port not needed externally.
-  #                Requires oauth_client_secret (real OAuth 2.1, not just a
-  #                shared bearer secret) since Tailscale itself only proves
-  #                network membership, not identity.
-  # "https"      — set tls_cert_path/tls_key_path; add-on expects a reverse proxy
-  # "cloudflare" — traffic arrives via a Cloudflare Tunnel managed by the
-  #                separate cloudflared add-on; this add-on does not run any
-  #                tunnel client itself. Requires oauth_client_secret — pair
-  #                with Cloudflare Access "Managed OAuth" and an identity
-  #                provider (e.g. Google) in front of the tunnel hostname for
-  #                real per-user authentication. See DOCS.md.
-  tunnel_mode: "none"
-
-  # Tailscale options (only if tunnel_mode = tailscale)
-  tailscale_auth_key: ~
-
-  # Direct HTTPS options (only if tunnel_mode = https)
-  tls_cert_path: "/ssl/fullchain.pem"
-  tls_key_path: "/ssl/privkey.pem"
-
-  # --- reMarkable sync (opt-in) ---
-  # Pair your device at http://<ha-ip>:8421/ — rmapi (the CLI this add-on
-  # wraps) manages its own credentials, there is no config field for a token.
-  enable_remarkable: false
-
-  # Sub-folder within the Obsidian vault where reMarkable notes are written.
-  remarkable_output_dir: "reMarkable"
-
-  # How often to poll for new/updated documents (seconds).
-  remarkable_sync_interval: 300
-
-  # Prefix applied to every reMarkable label when mapped to an Obsidian tag,
-  # e.g. "remarkable:" turns the reMarkable label "mylabel" into the Obsidian
-  # tag "remarkable:mylabel". Leave blank to overlay reMarkable labels into
-  # Obsidian tags unchanged.
-  remarkable_tag_prefix: ""
-
-  # Comma-separated tags added to every document synced from reMarkable, in
-  # addition to its own labels — e.g. "remarkable" to mark all synced notes.
-  remarkable_extra_tags: ""
-
-  # --- Home Assistant OCR (optional, for handwritten notebooks) ---
-  # Full URL to a HA webhook or REST endpoint that accepts
-  # {"image": "<base64-encoded PNG>"} and returns {"text": "..."}.
-  # Example: http://homeassistant.local:8123/api/webhook/remarkable-ocr
-  ha_ocr_url: ""
-
-  # Long-lived HA access token (not needed for unauthenticated webhooks).
-  ha_ocr_token: ~
-
-  # Optional: HA image_processing entity_id to pass in the OCR payload.
-  ha_ocr_entity: ""
-
-  # --- Git-tracked vault subdirectories (opt-in) ---
-  # Some vault subfolders may themselves be git repos on other devices (e.g.
-  # cloned on a Mac) whose .git/ metadata Obsidian Sync does not propagate.
-  # This periodically pulls configured repos directly from their remotes.
+  vault_password: ""
+  obsidian_sync_interval: 300
   enable_git_sync: false
-
-  # One repo per line: "<vault-relative-path>|<remote-url>[|<branch>]"
-  # Branch defaults to "main" if omitted. Lines starting with "#" and blank
-  # lines are ignored. Example:
-  #   Homelab|https://github.com/conallob/homelab.git
-  #   Professional Artifacts|https://github.com/conallob/professional-artifacts.git|main
   git_repos: ""
-
-  # How often to fetch/pull all configured repos (seconds).
+  git_auth_token: ""
   git_sync_interval: 900
-
-  # GitHub personal access token (fine-grained, read-only, scoped to just the
-  # private repos above) — only needed if any git_repos entry is private.
-  # Never written to disk; passed per-request via an HTTP auth header only.
-  git_auth_token: ~
-
+  enable_remarkable: false
+  remarkable_pairing_code: ""
+  remarkable_sync_interval: 300
+  remarkable_tag_prefix: ""
+  remarkable_extra_tags: ""
+  ha_ocr_url: ""
+  ha_ocr_token: ""
+  ha_ocr_entity: ""
+  enable_mcp: false
+  mcp_auth_token: ""
+  mcp_tls_cert: ""
+  mcp_tls_key: ""
+  mcp_allowed_hosts: ""
+  mcp_allowed_origins: ""
 schema:
-  obsidian_auth_token: str?
+  obsidian_auth_token: password
   vault_name: str
   vault_password: password?
-  enable_mcp: bool
-  mcp_auth_token: password?
-  oauth_client_id: str?
-  oauth_client_secret: password?
-  tunnel_mode: "list(none|tailscale|https|cloudflare)"
-  tailscale_auth_key: password?
-  tls_cert_path: str?
-  tls_key_path: str?
+  obsidian_sync_interval: int(30,86400)
+  enable_git_sync: bool
+  git_repos: str?
+  git_auth_token: password?
+  git_sync_interval: int(30,86400)
   enable_remarkable: bool
-  remarkable_output_dir: str?
-  remarkable_sync_interval: int?
+  remarkable_pairing_code: password?
+  remarkable_sync_interval: int(30,86400)
   remarkable_tag_prefix: str?
   remarkable_extra_tags: str?
   ha_ocr_url: str?
   ha_ocr_token: password?
   ha_ocr_entity: str?
-  enable_git_sync: bool
-  git_repos: str?
-  git_sync_interval: int?
-  git_auth_token: password?
+  enable_mcp: bool
+  mcp_auth_token: password?
+  mcp_tls_cert: str?
+  mcp_tls_key: password?
+  mcp_allowed_hosts: str?
+  mcp_allowed_origins: str?

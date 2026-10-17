@@ -1,0 +1,6 @@
+# Official MCP Python SDK v1; the lock pins every runtime transitive with hashes.
+mcp==1.30.0
+# Explicitly bounded framework API compatibility (the SDK accepts unbounded majors).
+starlette==1.3.1
+uvicorn==0.40.0
+pydantic-settings==2.14.2

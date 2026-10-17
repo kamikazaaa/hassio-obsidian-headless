@@ -1,0 +1,167 @@
+name: Verify hardened development build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# No publishing, repository writes, OIDC tokens, or external-repo PATs.
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python and Go (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12.15"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.9"
+          cache: false
+      - name: Install locked Python runtime and test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --require-hashes --only-binary=:all: --index-url=https://pypi.org/simple -r requirements.lock -r .github/requirements-test.lock
+          .venv/bin/python -m pip check
+      - name: Python behavioral tests including actual service UIDs
+        # Only synthetic fixtures on the ephemeral runner; no cloud accounts.
+        run: sudo -- .venv/bin/python -m pytest -q tests
+      - name: Go format, vet, race tests and build
+        working-directory: remarkable-sync
+        env:
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+        run: |
+          test -z "$(gofmt -l .)"
+          go mod verify
+          go vet ./...
+          go test -race ./...
+          CGO_ENABLED=0 go build -buildvcs=false -trimpath -o /tmp/remarkable-sync .
+      - name: Check service shell syntax
+        run: |
+          for script in rootfs/etc/s6-overlay/s6-rc.d/*/run rootfs/etc/s6-overlay/s6-rc.d/*/finish; do
+            sh -n "$script"
+          done
+
+  image:
+    name: Image build, smoke and S6 integration (${{ matrix.arch }})
+    needs: tests
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 65
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_ARCH: ${{ matrix.arch }}
+      BUILD_PLATFORM: ${{ matrix.platform }}
+      CONTAINER_ARTIFACTS: artifacts/container-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Record and verify native build provenance
+        id: provenance
+        timeout-minutes: 2
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          mkdir -p "$CONTAINER_ARTIFACTS"
+          checkout_commit=$(git rev-parse HEAD)
+          printf 'commit=%s\n' "$checkout_commit" >> "$GITHUB_OUTPUT"
+          {
+            printf 'repository=%s\nsource_commit=%s\nchecked_out_commit=%s\n' "$GITHUB_REPOSITORY" "$SOURCE_COMMIT" "$checkout_commit"
+            printf 'event=%s\nref=%s\nplatform=%s\nrunner=%s\nkernel_arch=%s\n' "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$BUILD_PLATFORM" "$EXPECTED_RUNNER" "$(uname -m)"
+            printf 'run_url=%s/%s/actions/runs/%s/attempts/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          } | tee "$CONTAINER_ARTIFACTS/provenance.txt"
+          case "$BUILD_PLATFORM/$(uname -m)" in
+            linux/amd64/x86_64|linux/arm64/aarch64) ;;
+            *) echo '::error::The runner is not native for the requested image platform'; exit 1 ;;
+          esac
+          docker version > "$CONTAINER_ARTIFACTS/docker-version.txt" 2>&1
+      - name: Build locally without publishing
+        id: build
+        timeout-minutes: 35
+        run: |
+          docker build --pull --progress plain --platform "$BUILD_PLATFORM" --build-arg BUILD_ARCH="$BUILD_ARCH" --tag obsidian-hardened:test . 2>&1 | tee "$CONTAINER_ARTIFACTS/workflow-build.log"
+      - name: Smoke test installed runtime without network or credentials
+        id: smoke
+        timeout-minutes: 5
+        run: |
+          docker run --rm --network none --workdir /tmp --user 10004:10004 --entrypoint /usr/local/bin/python3 obsidian-hardened:test -c 'import ssl, sqlite3, ctypes, bz2, lzma; import hardened.runtime, hardened.reader, hardened.snapshots, hardened.git_sync' 2>&1 | tee -a "$CONTAINER_ARTIFACTS/workflow-smoke.log"
+          docker run --rm --network none --user 10001:10001 --entrypoint /usr/local/bin/ob obsidian-hardened:test --version 2>&1 | tee -a "$CONTAINER_ARTIFACTS/workflow-smoke.log"
+          docker run --rm --network none --user 10003:10003 --entrypoint /usr/local/bin/rmapi obsidian-hardened:test version 2>&1 | tee -a "$CONTAINER_ARTIFACTS/workflow-smoke.log"
+          docker run --rm --network none --user 10001:10001 --workdir /opt/obsidian --entrypoint /usr/local/bin/node obsidian-hardened:test -e 'const D = require("better-sqlite3"); const d = new D(":memory:"); if (d.prepare("SELECT 42 AS v").get().v !== 42) process.exit(1); d.close();' 2>&1 | tee -a "$CONTAINER_ARTIFACTS/workflow-smoke.log"
+      - name: Test actual init and S6 with isolated synthetic fixtures
+        id: integration
+        timeout-minutes: 15
+        env:
+          CHECKOUT_COMMIT: ${{ steps.provenance.outputs.commit }}
+        run: |
+          timeout --signal=TERM --kill-after=60s 12m python3 tests/container/run.py \
+            --image obsidian-hardened:test \
+            --artifacts "$CONTAINER_ARTIFACTS" \
+            --expected-arch "${BUILD_PLATFORM#linux/}" \
+            --commit "$CHECKOUT_COMMIT" 2>&1 | tee "$CONTAINER_ARTIFACTS/workflow-runner.log"
+      - name: Summarize container verification
+        if: always()
+        timeout-minutes: 2
+        env:
+          PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          INTEGRATION_OUTCOME: ${{ steps.integration.outcome }}
+        run: |
+          mkdir -p "$CONTAINER_ARTIFACTS"
+          {
+            printf '## Container verification (%s)\n\n' "$BUILD_PLATFORM"
+            printf '| Gate | Outcome |\n| --- | --- |\n'
+            printf '| Native provenance | %s |\n| Image build | %s |\n| Offline runtime smoke | %s |\n| Actual /init and S6 integration | %s |\n' "$PROVENANCE_OUTCOME" "$BUILD_OUTCOME" "$SMOKE_OUTCOME" "$INTEGRATION_OUTCOME"
+            printf '\nFull scenario evidence and logs are retained in the container-integration artifact for this architecture and run attempt.\n\n### Provenance\n\n```text\n'
+            if test -f "$CONTAINER_ARTIFACTS/provenance.txt"; then
+              cat "$CONTAINER_ARTIFACTS/provenance.txt"
+            else
+              printf 'Provenance recording did not complete. Inspect the preceding step failure.\n'
+            fi
+            printf '```\n'
+          } | tee "$CONTAINER_ARTIFACTS/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain container verification evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: container-integration-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ env.CONTAINER_ARTIFACTS }}/
+          if-no-files-found: error
+          retention-days: 14

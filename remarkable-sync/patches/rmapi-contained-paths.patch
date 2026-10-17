@@ -1,0 +1,332 @@
+diff --git a/shell/mget.go b/shell/mget.go
+index 5d43f4d..6eae642 100644
+--- a/shell/mget.go
++++ b/shell/mget.go
+@@ -32,8 +32,13 @@ func mgetCmd(ctx *ShellCtxt) *ishell.Cmd {
+ 				return
+ 			}
+ 
+-			target := path.Clean(*outputDir)
+-			if *removeDeleted && target == "." {
++			target, err := filepath.Abs(path.Clean(*outputDir))
++			if err != nil {
++				fmt.Fprintln(os.Stderr, "rmapi rejected local download root")
++				c.Err(err)
++				return
++			}
++			if *removeDeleted && path.Clean(*outputDir) == "." {
+ 				c.Err(fmt.Errorf("Not removing deleted when target is '.'"))
+ 				return
+ 			}
+@@ -52,6 +57,7 @@ func mgetCmd(ctx *ShellCtxt) *ishell.Cmd {
+ 				return
+ 			}
+ 
++			var unsafePath error
+ 			fileMap := make(map[string]struct{})
+ 			fileMap[target] = struct{}{}
+ 
+@@ -62,16 +68,27 @@ func mgetCmd(ctx *ShellCtxt) *ishell.Cmd {
+ 						idxDir = 1
+ 					}
+ 
++					if currentNode.IsRoot() {
++						return filetree.ContinueVisiting
++					}
++					if err := util.ValidateDownloadName(currentNode.Name()); err != nil {
++						unsafePath = err
++						return filetree.StopVisiting
++					}
++					folders := currentPath[idxDir:]
++					// The filetree root has a synthetic slash name; only this
++					// first sentinel is excluded from remote-name validation.
++					if len(folders) > 0 && folders[0] == "/" {
++						folders = folders[1:]
++					}
+ 					fileName := fmt.Sprintf("%s.%s", currentNode.Name(), util.RMDOC)
+-
+-					dst := path.Join(target, filetree.BuildPath(currentPath[idxDir:], fileName))
++					dst, err := util.ContainedDownloadPath(target, folders, fileName)
++					if err != nil {
++						unsafePath = err
++						return filetree.StopVisiting
++					}
+ 					fileMap[dst] = struct{}{}
+-
+-					dir := path.Dir(dst)
+-					fileMap[dir] = struct{}{}
+-
+-					os.MkdirAll(dir, 0766)
+-
++					fileMap[filepath.Dir(dst)] = struct{}{}
+ 					if currentNode.IsDirectory() {
+ 						return filetree.ContinueVisiting
+ 					}
+@@ -114,6 +131,11 @@ func mgetCmd(ctx *ShellCtxt) *ishell.Cmd {
+ 			}
+ 
+ 			filetree.WalkTree(node, visitor)
++			if unsafePath != nil {
++				fmt.Fprintln(os.Stderr, "rmapi rejected unsafe download path")
++				c.Err(unsafePath)
++				return
++			}
+ 
+ 			if *removeDeleted {
+ 				filepath.Walk(target, func(path string, info os.FileInfo, err error) error {
+diff --git a/util/contained_download.go b/util/contained_download.go
+new file mode 100644
+index 0000000..921eda8
+--- /dev/null
++++ b/util/contained_download.go
+@@ -0,0 +1,130 @@
++package util
++
++import (
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"syscall"
++	"unicode"
++)
++
++// ValidateDownloadName accepts exactly one remote display-name component.
++// The hardened Linux addon deliberately does not reinterpret unsafe names.
++func ValidateDownloadName(name string) error {
++	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, ".") || filepath.IsAbs(name) || strings.ContainsAny(name, "/\\") {
++		return errors.New("unsafe remote download name")
++	}
++	for _, r := range name {
++		if unicode.IsControl(r) {
++			return errors.New("control character in remote download name")
++		}
++	}
++	return nil
++}
++
++// Open each directory through its parent descriptor so neither preexisting nor
++// substituted symlinks can redirect local download creation.
++func downloadDirectory(path string, create bool) (int, error) {
++	absolute, err := filepath.Abs(path)
++	if err != nil {
++		return -1, err
++	}
++	fd, err := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
++	if err != nil {
++		return -1, err
++	}
++	for _, part := range strings.Split(strings.TrimPrefix(absolute, "/"), "/") {
++		if part == "" {
++			continue
++		}
++		next, openErr := syscall.Openat(fd, part, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
++		if openErr == syscall.ENOENT && create {
++			mkdirErr := syscall.Mkdirat(fd, part, 0700)
++			if mkdirErr != nil && mkdirErr != syscall.EEXIST {
++				syscall.Close(fd)
++				return -1, mkdirErr
++			}
++			next, openErr = syscall.Openat(fd, part, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
++		}
++		syscall.Close(fd)
++		if openErr != nil {
++			return -1, openErr
++		}
++		fd = next
++	}
++	return fd, nil
++}
++
++// ContainedDownloadPath validates every remote component before mkdir/join.
++func ContainedDownloadPath(root string, folders []string, fileName string) (string, error) {
++	for _, part := range append(append([]string(nil), folders...), fileName) {
++		if err := ValidateDownloadName(part); err != nil {
++			return "", err
++		}
++	}
++	absolute, err := filepath.Abs(root)
++	if err != nil {
++		return "", err
++	}
++	parts := append([]string{absolute}, folders...)
++	parts = append(parts, fileName)
++	target := filepath.Join(parts...)
++	relative, err := filepath.Rel(absolute, target)
++	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
++		return "", errors.New("download escaped local root")
++	}
++	fd, err := downloadDirectory(filepath.Dir(target), true)
++	if err != nil {
++		return "", err
++	}
++	defer syscall.Close(fd)
++	existing, err := syscall.Openat(fd, filepath.Base(target), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
++	if err == syscall.ENOENT {
++		return target, nil
++	}
++	if err != nil {
++		return "", err
++	}
++	file := os.NewFile(uintptr(existing), target)
++	defer file.Close()
++	if err := regularDownloadFile(file); err != nil {
++		return "", err
++	}
++	return target, nil
++}
++func regularDownloadFile(file *os.File) error {
++	info, err := file.Stat()
++	if err != nil {
++		return err
++	}
++	if !info.Mode().IsRegular() {
++		return errors.New("download target is not regular")
++	}
++	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink != 1 {
++		return errors.New("download target is hardlinked")
++	}
++	return nil
++}
++func openDownloadTarget(target string) (*os.File, error) {
++	fd, err := downloadDirectory(filepath.Dir(target), false)
++	if err != nil {
++		return nil, err
++	}
++	defer syscall.Close(fd)
++	opened, err := syscall.Openat(fd, filepath.Base(target), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
++	if err != nil {
++		return nil, err
++	}
++	file := os.NewFile(uintptr(opened), target)
++	if err := regularDownloadFile(file); err != nil {
++		file.Close()
++		return nil, err
++	}
++	if err := file.Truncate(0); err != nil {
++		file.Close()
++		return nil, fmt.Errorf("truncate download: %w", err)
++	}
++	return file, nil
++}
+diff --git a/util/contained_download_test.go b/util/contained_download_test.go
+new file mode 100644
+index 0000000..a7141dd
+--- /dev/null
++++ b/util/contained_download_test.go
+@@ -0,0 +1,88 @@
++package util
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"syscall"
++	"testing"
++)
++
++func TestContainedDownloadRejectsRemoteComponents(t *testing.T) {
++	root := t.TempDir()
++	for _, name := range []string{"", ".", "..", "/absolute", "../escape", "a/b", `a\b`, ".hidden", "line\nfeed", "nul\x00name", "control\u0085"} {
++		if _, err := ContainedDownloadPath(root, nil, name); err == nil {
++			t.Errorf("unsafe file name accepted: %q", name)
++		}
++		if _, err := ContainedDownloadPath(root, []string{name}, "note.rmdoc"); err == nil {
++			t.Errorf("unsafe folder accepted: %q", name)
++		}
++	}
++}
++func TestContainedDownloadNoFollowAndNoHardlinks(t *testing.T) {
++	for _, kind := range []string{"root-link", "parent-link", "target-link", "hardlink", "fifo"} {
++		t.Run(kind, func(t *testing.T) {
++			root := t.TempDir()
++			outside := t.TempDir()
++			original := filepath.Join(outside, "keep")
++			os.WriteFile(original, []byte("unchanged"), 0600)
++			folders := []string{}
++			name := "note.rmdoc"
++			switch kind {
++			case "root-link":
++				link := filepath.Join(t.TempDir(), "root")
++				os.Symlink(root, link)
++				root = link
++			case "parent-link":
++				os.Symlink(outside, filepath.Join(root, "parent"))
++				folders = []string{"parent"}
++			case "target-link":
++				os.Symlink(original, filepath.Join(root, name))
++			case "hardlink":
++				os.Link(original, filepath.Join(root, name))
++			case "fifo":
++				syscall.Mkfifo(filepath.Join(root, name), 0600)
++			}
++			if _, err := ContainedDownloadPath(root, folders, name); err == nil {
++				t.Fatal("unsafe local target accepted")
++			}
++			source := filepath.Join(t.TempDir(), "source")
++			os.WriteFile(source, []byte("new"), 0600)
++			target := filepath.Join(append([]string{root}, append(folders, name)...)...)
++			if _, err := CopyFile(source, target); err == nil {
++				t.Fatal("unsafe target opened for writing")
++			}
++			data, _ := os.ReadFile(original)
++			if string(data) != "unchanged" {
++				t.Fatal("outside/hardlinked file overwritten")
++			}
++		})
++	}
++}
++func TestContainedDownloadNormalNamesAndSubstitutedLink(t *testing.T) {
++	root := t.TempDir()
++	target, err := ContainedDownloadPath(root, []string{"Work", "日本語"}, "Notebook.rmdoc")
++	if err != nil {
++		t.Fatal(err)
++	}
++	relative, _ := filepath.Rel(root, target)
++	if strings.HasPrefix(relative, "..") {
++		t.Fatal("target escaped root")
++	}
++	source := filepath.Join(t.TempDir(), "source")
++	os.WriteFile(source, []byte("bundle bytes"), 0600)
++	if _, err := CopyFile(source, target); err != nil {
++		t.Fatal(err)
++	}
++	outside := filepath.Join(t.TempDir(), "outside")
++	os.WriteFile(outside, []byte("keep"), 0600)
++	os.Remove(target)
++	os.Symlink(outside, target)
++	if _, err := CopyFile(source, target); err == nil {
++		t.Fatal("substituted symlink followed")
++	}
++	data, _ := os.ReadFile(outside)
++	if string(data) != "keep" {
++		t.Fatal("outside file modified")
++	}
++}
+diff --git a/util/util.go b/util/util.go
+index 6b2b20d..510b96d 100644
+--- a/util/util.go
++++ b/util/util.go
+@@ -57,7 +57,7 @@ func CopyFile(src, dst string) (int64, error) {
+ 	}
+ 	defer r.Close()
+ 
+-	w, err := os.Create(dst)
++	w, err := openDownloadTarget(dst)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+@@ -68,6 +68,12 @@ func CopyFile(src, dst string) (int64, error) {
+ 		return 0, err
+ 	}
+ 
++	if err := w.Sync(); err != nil {
++		return n, err
++	}
++	if err := w.Close(); err != nil {
++		return n, err
++	}
+ 	return n, nil
+ }
+ 
