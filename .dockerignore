@@ -20,6 +20,9 @@ remarkable-sync/**
 !remarkable-sync/go.sum
 !remarkable-sync/internal/
 remarkable-sync/internal/**
+!remarkable-sync/internal/ocr/
+remarkable-sync/internal/ocr/**
+!remarkable-sync/internal/ocr/*.go
 !remarkable-sync/internal/rmapicli/
 remarkable-sync/internal/rmapicli/**
 !remarkable-sync/internal/rmapicli/*.go

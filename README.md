@@ -55,7 +55,7 @@ The host/container build needs internet access to pinned official package source
 docker build --build-arg BUILD_VERSION=0.1.0-dev -t obsidian-headless-hardened:dev .
 ```
 
-Actual build and Home Assistant acceptance remain gates in [validation](docs/validation.md). CI is configured to build and smoke-test both architectures after the development branch is available on GitHub; configuring a job does not mean it has run.
+Native [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml) runs the Python/Go checks, builds both target images and checks the installed runtimes offline under unprivileged identities. Inspect the actual run result for the commit you intend to use. These smoke checks override the image entrypoint; full S6 startup, Home Assistant/cloud acceptance and restore testing remain separate gates in [validation](docs/validation.md).
 
 Minimum managed options:
 

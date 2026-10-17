@@ -4,11 +4,19 @@
 
 **Development preview only. Production installation is not approved by this evidence.**
 
-The hardened runtime has been implemented and tested against synthetic local inputs. No complete OCI image has been built or started in the implementation environment, and no real Home Assistant, Obsidian Sync, reMarkable, OCR or backup/restore acceptance run has been completed. GitHub CI is configured; configuration is not evidence of a successful run. Do not replace an existing production add-on in place.
+The hardened runtime has been implemented and tested against synthetic inputs. Native image construction and offline runtime smoke checks run in [GitHub CI](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml); inspect the completed result for the exact commit being considered. No complete S6 boot, real Home Assistant, Obsidian Sync, reMarkable, OCR or backup/restore acceptance run has been completed. Do not replace an existing production add-on in place.
 
 Evidence date: **2026-10-17**. Reviewed upstream base: `3b856fa68892f3a8e1c4548cdc46b649b87de0e2`. The final integrated Python run below covered implementation commit **`18291bccc20bccbabcff5416453350ba7c75593e`**; this validation document was added afterwards without changing runtime behavior.
 
-## Executed checks
+## Remote verification scope
+
+The development source is available in [pull request #1](https://github.com/kamikazaaa/hassio-obsidian-headless/pull/1). The initial uploaded Git tree `6b3ee966248fea16723bec6f6d460c5b95ecd748` matched the reviewed local delivery exactly; subsequent build corrections are separate commits in that pull request.
+
+The [initial native CI run](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39035864431) passed all 124 Python tests without skips, plus Go race tests, vet, build and shell checks, on both amd64 and arm64. The image jobs exposed a missing system CA bundle in the slim Node stage. A copy from the untouched pinned Go base supplies HTTPS trust before APT. The [next run](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/runs/39036549857) again passed both test jobs and exposed a required OCR package omitted from the Docker build-context allowlist. The allowlist now includes that package's Go sources. The actual image-build outcome for subsequent commits is recorded in their CI runs; the earlier failures are retained as evidence.
+
+The image smoke checks run with no network, override the image entrypoint, and use service UIDs 10001, 10003 and 10004 for Python imports, CLI version commands and an in-memory SQLite query. Even a successful complete CI run therefore does not establish `/init`/S6 startup, Supervisor integration, real account synchronization, final operating-system vulnerability status or independent restore behavior.
+
+## Executed local checks
 
 | Check | Observed result | What the result establishes |
 | --- | --- | --- |

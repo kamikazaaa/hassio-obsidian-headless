@@ -117,7 +117,7 @@ Completed checks on 2026-10-17:
 - All 29 updated Python runtime packages and all six test packages downloaded successfully with mandatory hash checking and binary-only selection for Debian-compatible amd64 and arm64 targets. A fresh local Python 3.12 environment installed offline from those verified amd64 wheels; `pip check` passed.
 - All 48 reader tests passed with the updated security fixes, including real SDK transport over local HTTP and certificate-verified HTTPS. Two deprecation warnings concern Starlette's test-client HTTPX/AnyIO compatibility; they were not suppressed. Native arm64 wheels were validated, not executed locally.
 - Dockerfile syntax parsed with Docker BuildKit's parser. The Docker context allowlist was checked with Moby's actual pattern matcher against required source files and excluded Git data, credentials, local node_modules, caches, and unrelated documents. This checks input selection, not image execution.
-- Workflow YAML parsed. Complete workflow runs remain a GitHub CI acceptance gate.
+- Workflow YAML parsed. Actual native image-build and smoke-test results are recorded in [GitHub Actions](https://github.com/kamikazaaa/hassio-obsidian-headless/actions/workflows/verify.yaml), separately from these local checks. See [validation](validation.md) for the remote verification scope and remaining release gates.
 
 ## Updating the build
 
