@@ -13,6 +13,14 @@ import unittest
 from unittest import mock
 
 
+def _process_running(pid):
+    try:
+        return (Path('/proc') / str(pid) / 'stat').read_text().split()[2] != 'Z'
+    except (FileNotFoundError, ProcessLookupError):
+        # Exit can race both opening and reading the procfs entry.
+        return False
+
+
 def _mapped_uid(uid):
     try:
         return any(int(a) <= uid < int(a)+int(c) for a,b,c in
@@ -440,9 +448,8 @@ run_command([sys.executable,'-c',sys.argv[1]],dict(os.environ))
             parent.terminate()
             _,stderr=parent.communicate(timeout=3)
             self.assertNotEqual(parent.returncode,0,stderr)
-            process=Path('/proc')/str(child_pid)/'stat'
-            self.assertTrue(not process.exists() or process.read_text().split()[2]=='Z',
-                            'acquisition child remained alive after runtime shutdown')
+            self.assertFalse(_process_running(child_pid),
+                             'acquisition child remained alive after runtime shutdown')
         finally:
             if parent.poll() is None: parent.kill()
             parent.wait()
@@ -497,12 +504,12 @@ except OSError:
                                          json_output=True,timeout=2)
             self.assertLess(time.monotonic()-started,3)
             self.assertNotIn('private-output-sentinel',str(raised.exception))
-            pid=int(pidfile.read_text()); process=Path('/proc')/str(pid)/'stat'
+            pid=int(pidfile.read_text())
             deadline=time.monotonic()+2
-            while process.exists() and process.read_text().split()[2]!='Z' and time.monotonic()<deadline:
+            while _process_running(pid) and time.monotonic()<deadline:
                 time.sleep(.01)
-            self.assertTrue(not process.exists() or process.read_text().split()[2]=='Z',
-                            'oversized acquisition left its descendant alive')
+            self.assertFalse(_process_running(pid),
+                             'oversized acquisition left its descendant alive')
         finally:
             if pidfile.exists():
                 try: os.kill(int(pidfile.read_text()),9)
@@ -519,10 +526,10 @@ pathlib.Path(sys.argv[1]).write_text(str(other.pid)); time.sleep(60)
                 self.runtime.run_command([sys.executable,'-c',child,str(pidfile),'private-argument-sentinel'],
                     dict(os.environ),json_output=True,timeout=.2)
             self.assertNotIn('private-argument-sentinel',str(raised.exception))
-            process=Path('/proc')/pidfile.read_text()/'stat'; deadline=time.monotonic()+2
-            while process.exists() and process.read_text().split()[2]!='Z' and time.monotonic()<deadline:
+            pid=int(pidfile.read_text()); deadline=time.monotonic()+2
+            while _process_running(pid) and time.monotonic()<deadline:
                 time.sleep(.01)
-            self.assertTrue(not process.exists() or process.read_text().split()[2]=='Z')
+            self.assertFalse(_process_running(pid))
         finally:
             if pidfile.exists():
                 try: os.kill(int(pidfile.read_text()),9)
@@ -554,8 +561,7 @@ os.chdir(sys.argv[1]); child=_start_mcp_process({},pathlib.Path(sys.argv[2])); c
             import socket
             deadline=time.monotonic()+2
             while time.monotonic()<deadline:
-                process=Path('/proc')/str(child_pid)/'stat'
-                if not process.exists() or process.read_text().split()[2]=='Z': break
+                if not _process_running(child_pid): break
                 time.sleep(.02)
             with self.assertRaises(OSError): socket.create_connection(('127.0.0.1',data['port']),timeout=.2)
         finally:

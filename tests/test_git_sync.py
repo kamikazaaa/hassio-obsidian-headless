@@ -170,7 +170,8 @@ pathlib.Path(os.environ['FIXTURE_PIDS']).write_text(json.dumps([os.getpid(), chi
     def running(pid):
         try:
             return (Path('/proc') / str(pid) / 'stat').read_text().split()[2] != 'Z'
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # procfs can report ESRCH if the process exits after stat is opened.
             return False
 
     def kill_fixture_processes(self):
